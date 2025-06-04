@@ -1,29 +1,15 @@
-name: Build Multi-Platform Executives
+name: Build Multi-Platform Executables
 
 on:
   push:
     tags:
       - 'v*'  # v1.0, v2.1 같은 태그가 푸시될 때 실행
 
-jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-    steps:
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
+permissions:
+  contents: write  # 릴리스 생성을 위한 권한
 
+jobs:
   build:
-    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -31,19 +17,16 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             output_name: CapacityFinder
-            build_cmd: pyinstaller --onefile --windowed main.py --name CapacityFinder
           - os: windows-latest
             platform: windows
             output_name: CapacityFinder.exe
-            build_cmd: pyinstaller --onefile --windowed main.py --name CapacityFinder
           - os: macos-latest
             platform: macos
             output_name: CapacityFinder
-            build_cmd: pyinstaller --onefile --windowed main.py --name CapacityFinder
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -56,14 +39,13 @@ jobs:
         pip install PyQt5 pyinstaller
 
     - name: Build executable with PyInstaller
-      run: ${{ matrix.build_cmd }}
+      run: pyinstaller --onefile --windowed main.py --name CapacityFinder
 
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ./dist/${{ matrix.output_name }}
+        name: Release ${{ github.ref_name }}
+        tag_name: ${{ github.ref_name }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ./dist/${{ matrix.output_name }}
-        asset_name: ${{ matrix.platform }}-${{ matrix.output_name }}
-        asset_content_type: application/octet-stream
