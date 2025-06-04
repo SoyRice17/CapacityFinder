@@ -1,41 +1,69 @@
-name: Build Multi-Platform
+name: Build Multi-Platform Executives
 
 on:
   push:
     tags:
-      - 'v*'  # v1.0, v2.1 같은 태그 푸시할 때
+      - 'v*'  # v1.0, v2.1 같은 태그가 푸시될 때 실행
 
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: false
+        prerelease: false
+
   build:
+    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             platform: linux
-          - os: windows-latest  # ← 여기서 Windows exe 빌드!
+            output_name: CapacityFinder
+            build_cmd: pyinstaller --onefile --windowed main.py --name CapacityFinder
+          - os: windows-latest
             platform: windows
+            output_name: CapacityFinder.exe
+            build_cmd: pyinstaller --onefile --windowed main.py --name CapacityFinder
           - os: macos-latest
             platform: macos
+            output_name: CapacityFinder
+            build_cmd: pyinstaller --onefile --windowed main.py --name CapacityFinder
 
     steps:
-    - uses: actions/checkout@v3
-    
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-    
+
     - name: Install dependencies
       run: |
-        pip install pyinstaller PyQt5
-    
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller --onefile --windowed main.py
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+        python -m pip install --upgrade pip
+        pip install PyQt5 pyinstaller
+
+    - name: Build executable with PyInstaller
+      run: ${{ matrix.build_cmd }}
+
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        name: app-${{ matrix.platform }}
-        path: dist/
+        upload_url: ${{ needs.create-release.outputs.upload_url }}
+        asset_path: ./dist/${{ matrix.output_name }}
+        asset_name: ${{ matrix.platform }}-${{ matrix.output_name }}
+        asset_content_type: application/octet-stream
