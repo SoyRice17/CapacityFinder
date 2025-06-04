@@ -12,6 +12,7 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false  # 하나 실패해도 다른 빌드 계속 진행
       matrix:
         include:
           - os: ubuntu-latest
@@ -41,11 +42,21 @@ jobs:
     - name: Build executable with PyInstaller
       run: pyinstaller --onefile --windowed main.py --name CapacityFinder
 
+    - name: Check if file exists (Debug)
+      run: |
+        echo "=== 빌드 결과 확인 ==="
+        ls -la dist/
+        echo "=== 찾고 있는 파일: ${{ matrix.output_name }} ==="
+      shell: bash
+
     - name: Upload to Release
       uses: softprops/action-gh-release@v1
+      if: success()
       with:
         files: ./dist/${{ matrix.output_name }}
         name: Release ${{ github.ref_name }}
         tag_name: ${{ github.ref_name }}
+        fail_on_unmatched_files: true
+        generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
