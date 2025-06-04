@@ -12,6 +12,14 @@ class CapacityFinder:
         self.dic_files = {}
         self.window = None  # GUI 윈도우 참조를 위해 추가
         
+    def format_file_size(self, size_mb):
+        """파일 사이즈를 적절한 단위(MB/GB)로 포맷팅하는 함수"""
+        if size_mb >= 1024:  # 1GB 이상
+            size_gb = size_mb / 1024
+            return f"{size_gb:.2f} GB"
+        else:
+            return f"{size_mb:.2f} MB"
+        
     def handle_path_confirmation(self, path):
         """GUI에서 경로가 확인되었을 때 호출되는 함수"""
         print(f"메인에서 받은 경로: {path}")
@@ -27,12 +35,16 @@ class CapacityFinder:
             # GUI 리스트 초기화
             self.window.list_widget.clear()
             
+            # 용량 기준으로 내림차순 정렬 (큰 것부터)
+            sorted_users = sorted(result_dict.items(), key=lambda x: x[1], reverse=True)
+            
             # 결과를 GUI에 표시
-            self.window.add_result_to_list("=== 사용자별 파일 용량 ===")
-            for username, total_size in result_dict.items():
-                result_text = f"{username}: {total_size:.2f} MB"
+            self.window.add_result_to_list("=== 사용자별 파일 용량 (용량 큰 순) ===")
+            for username, total_size in sorted_users:
+                formatted_size = self.format_file_size(total_size)
+                result_text = f"{username}: {formatted_size}"
                 self.window.add_result_to_list(result_text)
-                print(f"사용자: {username}, 총 용량: {total_size:.2f} MB")
+                print(f"사용자: {username}, 총 용량: {formatted_size}")
         else:
             self.window.add_result_to_list("처리할 파일이 없습니다.")
         
