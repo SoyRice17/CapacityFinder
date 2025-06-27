@@ -4,13 +4,45 @@
 from gui import MainWindow
 import sys
 import os
+import re
+from enum import Enum
 from PyQt5.QtWidgets import QApplication
+
+class SiteType(Enum):
+    """지원하는 성인 플랫폼 목록"""
+    CHATURBATE = "chaturbate"
+    STRIPCHAT = "stripchat"
+    CAMSODA = "camsoda"
+    MYFREECAMS = "myfreecams"
+    CAM4 = "cam4"
+    BONGACAMS = "bongacams"
+    LIVEJASMIN = "livejasmin"
+    FLIRT4FREE = "flirt4free"
+    XHAMSTERLIVE = "xhamsterlive"
+    STREAMATE = "streamate"
+    CAMGIRLS = "camgirls"
+    IMLIVE = "imlive"
+    CAMS = "cams"
+    JERKMATE = "jerkmate"
+    AMATEUR = "amateur"
+    
+    @classmethod
+    def get_all_sites(cls):
+        """모든 사이트명을 리스트로 반환"""
+        return [site.value for site in cls]
+    
+    @classmethod
+    def is_valid_site(cls, site_name):
+        """주어진 문자열이 유효한 사이트명인지 확인"""
+        return site_name.lower() in cls.get_all_sites()
 
 class CapacityFinder:
     def __init__(self):
         self.current_path = None
         self.dic_files = {}
         self.window = None  # GUI 윈도우 참조를 위해 추가
+        # 날짜 패턴 정의 (2025-06-26T15_09_46+09_00 형식)
+        self.date_pattern = re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}_\d{2}_\d{2}[+-]\d{2}_\d{2}')
         
     def format_file_size(self, size_mb):
         """파일 사이즈를 적절한 단위(MB/GB)로 포맷팅하는 함수"""
@@ -91,33 +123,67 @@ class CapacityFinder:
         return self.dic_files
 
     def file_name_handle(self, file_name):
-        """파일 이름을 처리해서 유저명만 반환하는 함수
-        파일명 구조: 사이트-유저명-연-월-일
-        예: instagram-john_doe-2024-01-15.txt -> john_doe 반환
+        """파일 이름을 처리해서 채널명만 반환하는 함수
+        다양한 파일명 구조 지원:
+        - 사이트-채널-날짜
+        - 채널-사이트-날짜
+        - 기타 조합
+        예: instagram-john_doe-2025-06-26T15_09_46+09_00.txt -> john_doe 반환
         """
-        if file_name:
-            try:
-                # 확장자 제거 (선택적)
-                name_without_ext = file_name.split('.')[0] if '.' in file_name else file_name
-                
-                # '-'로 분리
-                parts = name_without_ext.split('-')
-                
-                # 최소 3개 부분이 있어야 함 (사이트-유저명-날짜...)
-                if len(parts) >= 3:
-                    # 두 번째 부분이 유저명
-                    username = parts[1]
-                    print(f"파일명: {file_name} -> 유저명: {username}")
-                    return username
-                else:
-                    print(f"파일명 형식이 올바르지 않음: {file_name}")
-                    return None
-                    
-            except Exception as e:
-                print(f"파일명 처리 중 오류: {file_name}, 에러: {e}")
+        if not file_name:
+            return None
+            
+        try:
+            # 확장자 제거
+            name_without_ext = file_name.split('.')[0] if '.' in file_name else file_name
+            
+            # 날짜 패턴 찾기
+            date_match = self.date_pattern.search(name_without_ext)
+            if not date_match:
+                print(f"날짜 패턴을 찾을 수 없음: {file_name}")
                 return None
-        
-        return None
+            
+            date_part = date_match.group()
+            date_start = date_match.start()
+            
+            # 날짜 이전 부분 추출
+            before_date = name_without_ext[:date_start].rstrip('-')
+            
+            # '-'로 분리
+            parts = before_date.split('-')
+            
+            if len(parts) < 2:
+                print(f"파일명 구조가 올바르지 않음: {file_name}")
+                return None
+            
+            # 사이트 찾기
+            site_part = None
+            channel_parts = []
+            
+            for i, part in enumerate(parts):
+                if SiteType.is_valid_site(part):
+                    site_part = part
+                    # 사이트가 아닌 나머지 부분들을 채널명으로 결합
+                    channel_parts = parts[:i] + parts[i+1:]
+                    break
+            
+            if not site_part:
+                print(f"알려진 사이트를 찾을 수 없음: {file_name}")
+                return None
+            
+            if not channel_parts:
+                print(f"채널명을 찾을 수 없음: {file_name}")
+                return None
+            
+            # 채널명 결합 (여러 부분이 있을 경우 '-'로 다시 결합)
+            channel_name = '-'.join(channel_parts)
+            
+            print(f"파일명: {file_name} -> 사이트: {site_part}, 채널: {channel_name}, 날짜: {date_part}")
+            return channel_name
+                    
+        except Exception as e:
+            print(f"파일명 처리 중 오류: {file_name}, 에러: {e}")
+            return None
 
 def main():
     """메인 함수에서 GUI 애플리케이션을 실행합니다."""
