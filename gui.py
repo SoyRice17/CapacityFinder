@@ -1,7 +1,9 @@
 import sys
+import os
+import subprocess
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLineEdit, 
-                             QPushButton, QLabel)
+                             QPushButton, QLabel, QMessageBox)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
@@ -9,6 +11,7 @@ class MainWindow(QMainWindow):
     def __init__(self, on_path_confirmed=None):
         super().__init__()
         self.on_path_confirmed = on_path_confirmed  # 콜백 함수 저장
+        self.current_path = None  # 현재 경로 저장을 위해 추가
         self.setWindowTitle("Capacity Finder")
         self.setGeometry(100, 100, 1000, 700)
 
@@ -23,6 +26,8 @@ class MainWindow(QMainWindow):
         self.tree_widget.setColumnWidth(0, 400)
         self.tree_widget.setColumnWidth(1, 150)
         self.tree_widget.setColumnWidth(2, 100)
+        # 더블클릭 이벤트 연결
+        self.tree_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
         layout.addWidget(self.tree_widget, 4)
 
         # 현재 경로 표시 라벨
@@ -50,6 +55,7 @@ class MainWindow(QMainWindow):
         """확인 버튼 클릭 시 호출되는 함수"""
         path_text = self.path_input.text().strip()
         if path_text:
+            self.current_path = path_text  # 현재 경로 저장
             self.path_label.setText(f"현재 경로: {path_text}")
             self.path_input.clear()
             
@@ -58,6 +64,55 @@ class MainWindow(QMainWindow):
                 self.on_path_confirmed(path_text)
         else:
             self.path_label.setText("현재 경로: 설정되지 않음")
+
+    def on_item_double_clicked(self, item, column):
+        """트리 아이템 더블클릭 시 호출되는 함수"""
+        # 사용자 아이템(부모)인지 파일 아이템(자식)인지 확인
+        parent = item.parent()
+        
+        if parent is not None:  # 파일 아이템인 경우 (부모가 있음)
+            file_name = item.text(0)  # 파일명 가져오기
+            
+            if self.current_path and file_name:
+                file_path = os.path.join(self.current_path, file_name)
+                
+                # 파일이 실제로 존재하는지 확인
+                if os.path.exists(file_path):
+                    try:
+                        # 운영체제별 파일 열기
+                        if sys.platform.startswith('win'):  # Windows
+                            os.startfile(file_path)
+                        elif sys.platform.startswith('darwin'):  # macOS
+                            subprocess.call(['open', file_path])
+                        else:  # Linux
+                            subprocess.call(['xdg-open', file_path])
+                            
+                        print(f"파일 열기: {file_path}")
+                        
+                    except Exception as e:
+                        # 오류 발생 시 메시지 박스 표시
+                        msg = QMessageBox()
+                        msg.setIcon(QMessageBox.Warning)
+                        msg.setWindowTitle("파일 열기 오류")
+                        msg.setText(f"파일을 열 수 없습니다:\n{str(e)}")
+                        msg.exec_()
+                        print(f"파일 열기 오류: {e}")
+                else:
+                    # 파일이 존재하지 않는 경우
+                    msg = QMessageBox()
+                    msg.setIcon(QMessageBox.Warning)
+                    msg.setWindowTitle("파일 없음")
+                    msg.setText(f"파일을 찾을 수 없습니다:\n{file_path}")
+                    msg.exec_()
+                    print(f"파일 없음: {file_path}")
+            else:
+                print("경로가 설정되지 않았거나 파일명이 없습니다.")
+        else:
+            # 사용자 아이템인 경우 (폴더 확장/축소)
+            if item.isExpanded():
+                item.setExpanded(False)
+            else:
+                item.setExpanded(True)
 
     def add_result_to_list(self, result_text):
         """메인에서 호출해서 리스트에 결과를 추가하는 함수 (기존 호환성 유지)"""
