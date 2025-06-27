@@ -14,6 +14,11 @@ class MainWindow(QMainWindow):
         self.on_path_confirmed = on_path_confirmed  # 콜백 함수 저장
         self.path_history = path_history  # 경로 기록 관리자
         self.current_path = None  # 현재 경로 저장을 위해 추가
+        # 정렬을 위한 사용자 데이터 저장
+        self.users_data = {}  # {username: {user_data: dict, formatted_size: str}}
+        self.current_sort_column = 1  # 기본값: 크기로 정렬 (0: 이름, 1: 크기, 2: 파일 수)
+        self.current_sort_order = Qt.DescendingOrder  # 기본값: 내림차순
+        
         self.setWindowTitle("Capacity Finder")
         self.setGeometry(100, 100, 1000, 700)
 
@@ -28,6 +33,15 @@ class MainWindow(QMainWindow):
         self.tree_widget.setColumnWidth(0, 400)
         self.tree_widget.setColumnWidth(1, 150)
         self.tree_widget.setColumnWidth(2, 100)
+        
+        # 정렬 기능 활성화
+        self.tree_widget.setSortingEnabled(False)  # 기본 정렬은 비활성화하고 커스텀 정렬 사용
+        
+        # 헤더 클릭 이벤트 연결
+        header = self.tree_widget.header()
+        header.sectionClicked.connect(self.on_header_clicked)
+        header.setSectionsClickable(True)
+        
         # 더블클릭 이벤트 연결
         self.tree_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
         layout.addWidget(self.tree_widget, 4)
@@ -188,6 +202,17 @@ class MainWindow(QMainWindow):
 
     def add_user_data(self, username, user_data, formatted_size):
         """사용자 데이터를 트리에 추가하는 함수"""
+        # 사용자 데이터 저장 (정렬을 위해)
+        size_mb = user_data['total_size']  # MB 단위 숫자값
+        self.users_data[username] = {
+            'user_data': {
+                'name': username,
+                'size': size_mb,
+                'files': user_data['files']
+            },
+            'formatted_size': formatted_size
+        }
+        
         # 사용자 아이템 생성
         user_item = QTreeWidgetItem(self.tree_widget)
         user_item.setText(0, username)
@@ -200,11 +225,14 @@ class MainWindow(QMainWindow):
         user_item.setBackground(1, light_blue)
         user_item.setBackground(2, light_blue)
         
-        # 파일 목록을 하위 아이템으로 추가
-        for file_info in user_data['files']:
+        # 파일 목록을 크기순(내림차순)으로 정렬 - 첫 로딩시 기본 정렬
+        sorted_files = sorted(user_data['files'], key=lambda x: x['size'], reverse=True)
+        
+        # 파일 목록을 하위 아이템으로 추가 (GB/MB 단위로 표시)
+        for file_info in sorted_files:
             file_item = QTreeWidgetItem(user_item)
             file_item.setText(0, file_info['name'])
-            file_item.setText(1, f"{file_info['size']:.2f} MB")
+            file_item.setText(1, self.format_file_size(file_info['size']))  # GB/MB 단위로 표시
             file_item.setText(2, "")
         
         # 기본적으로 접혀있도록 설정
@@ -215,3 +243,102 @@ class MainWindow(QMainWindow):
     def clear_results(self):
         """트리 위젯의 모든 결과를 지우는 함수"""
         self.tree_widget.clear()
+        self.users_data = {}  # 저장된 사용자 데이터도 초기화
+
+    def on_header_clicked(self, logicalIndex):
+        """헤더 클릭 시 정렬 기능"""
+        # 같은 컬럼을 클릭하면 정렬 순서 토글, 다른 컬럼이면 내림차순부터 시작
+        if self.current_sort_column == logicalIndex:
+            self.current_sort_order = Qt.AscendingOrder if self.current_sort_order == Qt.DescendingOrder else Qt.DescendingOrder
+        else:
+            self.current_sort_column = logicalIndex
+            self.current_sort_order = Qt.DescendingOrder  # 새 컬럼은 항상 내림차순부터
+        
+        # 정렬 표시기 설정
+        self.tree_widget.header().setSortIndicator(self.current_sort_column, self.current_sort_order)
+        
+        # 데이터 정렬 및 표시
+        self.sort_users_data()
+
+    def sort_users_data(self):
+        """사용자 데이터를 정렬하는 함수"""
+        if not self.users_data:
+            return
+            
+        # 정렬 키에 따라 데이터 정렬
+        sorted_items = sorted(self.users_data.items(), 
+                            key=lambda x: self.get_sort_key(x[0], x[1]), 
+                            reverse=(self.current_sort_order == Qt.DescendingOrder))
+        
+        # 트리 위젯 초기화
+        self.tree_widget.clear()
+        
+        # 헤더 다시 추가
+        header_item = QTreeWidgetItem(self.tree_widget)
+        header_item.setText(0, "=== 사용자별 파일 용량 ===")
+        header_item.setBackground(0, QColor(211, 211, 211))  # lightGray
+        font = header_item.font(0)
+        font.setBold(True)
+        header_item.setFont(0, font)
+        self.tree_widget.addTopLevelItem(header_item)
+        
+        # 정렬된 데이터로 다시 표시 (중복 저장 방지를 위해 직접 아이템 생성)
+        for username, data in sorted_items:
+            user_data = data['user_data']
+            formatted_size = data['formatted_size']
+            
+            # 사용자 아이템 생성
+            user_item = QTreeWidgetItem(self.tree_widget)
+            user_item.setText(0, username)
+            user_item.setText(1, formatted_size)
+            user_item.setText(2, str(len(user_data['files'])))
+            
+            # 사용자 아이템 스타일 설정
+            light_blue = QColor(173, 216, 230)  # lightBlue
+            user_item.setBackground(0, light_blue)
+            user_item.setBackground(1, light_blue)
+            user_item.setBackground(2, light_blue)
+            
+            # 파일 목록 정렬 (헤더 정렬 기준에 따라)
+            sorted_files = self.sort_files(user_data['files'])
+            
+            # 파일 목록을 하위 아이템으로 추가
+            for file_info in sorted_files:
+                file_item = QTreeWidgetItem(user_item)
+                file_item.setText(0, file_info['name'])
+                file_item.setText(1, self.format_file_size(file_info['size']))  # GB/MB 단위로 표시
+                file_item.setText(2, "")
+            
+            # 기본적으로 접혀있도록 설정
+            user_item.setExpanded(False)
+            
+            self.tree_widget.addTopLevelItem(user_item)
+
+    def sort_files(self, files):
+        """파일 목록을 정렬하는 함수"""
+        if self.current_sort_column == 0:  # 파일명으로 정렬
+            return sorted(files, key=lambda x: x['name'].lower(), 
+                         reverse=(self.current_sort_order == Qt.DescendingOrder))
+        elif self.current_sort_column == 1:  # 파일 크기로 정렬
+            return sorted(files, key=lambda x: x['size'], 
+                         reverse=(self.current_sort_order == Qt.DescendingOrder))
+        else:  # 파일 수 컬럼이거나 기타의 경우 기본 순서 유지
+            return files
+
+    def get_sort_key(self, username, data):
+        """정렬 키를 반환하는 함수"""
+        if self.current_sort_column == 0:  # 사용자명
+            return username.lower()
+        elif self.current_sort_column == 1:  # 크기
+            return data['user_data']['size']
+        elif self.current_sort_column == 2:  # 파일 수
+            return len(data['user_data']['files'])
+        return ""
+
+    def format_file_size(self, size_mb):
+        """파일 사이즈를 적절한 단위(MB/GB)로 포맷팅하는 함수"""
+        if size_mb >= 1024:  # 1GB 이상
+            size_gb = size_mb / 1024
+            return f"{size_gb:.2f} GB"
+        else:
+            return f"{size_mb:.2f} MB"
