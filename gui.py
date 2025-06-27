@@ -1,21 +1,29 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QLineEdit, QPushButton, QLabel
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                             QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLineEdit, 
+                             QPushButton, QLabel)
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
 
 class MainWindow(QMainWindow):
     def __init__(self, on_path_confirmed=None):
         super().__init__()
         self.on_path_confirmed = on_path_confirmed  # 콜백 함수 저장
-        self.setWindowTitle("경로 입력기")
-        self.setGeometry(100, 100, 800, 600)
+        self.setWindowTitle("Capacity Finder")
+        self.setGeometry(100, 100, 1000, 700)
 
         # 메인 위젯과 레이아웃 설정
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
 
-        # 리스트 위젯 (4/5 크기)
-        self.list_widget = QListWidget()
-        layout.addWidget(self.list_widget, 4)
+        # 트리 위젯 (4/5 크기)
+        self.tree_widget = QTreeWidget()
+        self.tree_widget.setHeaderLabels(["사용자/파일", "크기", "파일 수"])
+        self.tree_widget.setColumnWidth(0, 400)
+        self.tree_widget.setColumnWidth(1, 150)
+        self.tree_widget.setColumnWidth(2, 100)
+        layout.addWidget(self.tree_widget, 4)
 
         # 현재 경로 표시 라벨
         self.path_label = QLabel("현재 경로: 설정되지 않음")
@@ -52,5 +60,47 @@ class MainWindow(QMainWindow):
             self.path_label.setText("현재 경로: 설정되지 않음")
 
     def add_result_to_list(self, result_text):
-        """메인에서 호출해서 리스트에 결과를 추가하는 함수"""
-        self.list_widget.addItem(result_text)
+        """메인에서 호출해서 리스트에 결과를 추가하는 함수 (기존 호환성 유지)"""
+        # 트리 위젯에 헤더 추가
+        if result_text.startswith("==="):
+            header_item = QTreeWidgetItem(self.tree_widget)
+            header_item.setText(0, result_text)
+            header_item.setBackground(0, QColor(211, 211, 211))  # lightGray
+            # 폰트 굵게 설정
+            font = header_item.font(0)
+            font.setBold(True)
+            header_item.setFont(0, font)
+            self.tree_widget.addTopLevelItem(header_item)
+        else:
+            # 일반 결과는 사용자 정보로 처리
+            pass
+
+    def add_user_data(self, username, user_data, formatted_size):
+        """사용자 데이터를 트리에 추가하는 함수"""
+        # 사용자 아이템 생성
+        user_item = QTreeWidgetItem(self.tree_widget)
+        user_item.setText(0, username)
+        user_item.setText(1, formatted_size)
+        user_item.setText(2, str(len(user_data['files'])))
+        
+        # 사용자 아이템 스타일 설정
+        light_blue = QColor(173, 216, 230)  # lightBlue
+        user_item.setBackground(0, light_blue)
+        user_item.setBackground(1, light_blue)
+        user_item.setBackground(2, light_blue)
+        
+        # 파일 목록을 하위 아이템으로 추가
+        for file_info in user_data['files']:
+            file_item = QTreeWidgetItem(user_item)
+            file_item.setText(0, file_info['name'])
+            file_item.setText(1, f"{file_info['size']:.2f} MB")
+            file_item.setText(2, "")
+        
+        # 기본적으로 접혀있도록 설정
+        user_item.setExpanded(False)
+        
+        self.tree_widget.addTopLevelItem(user_item)
+
+    def clear_results(self):
+        """트리 위젯의 모든 결과를 지우는 함수"""
+        self.tree_widget.clear()

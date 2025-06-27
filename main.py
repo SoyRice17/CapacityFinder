@@ -39,7 +39,7 @@ class SiteType(Enum):
 class CapacityFinder:
     def __init__(self):
         self.current_path = None
-        self.dic_files = {}
+        self.dic_files = {}  # {username: {'total_size': float, 'files': [{'name': str, 'size': float}]}}
         self.window = None  # GUI 윈도우 참조를 위해 추가
         # 날짜 패턴 정의 (2025-06-26T15_09_46+09_00 형식)
         self.date_pattern = re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}_\d{2}_\d{2}[+-]\d{2}_\d{2}')
@@ -65,18 +65,22 @@ class CapacityFinder:
         
         if result_dict:
             # GUI 리스트 초기화
-            self.window.list_widget.clear()
+            self.window.clear_results()
             
             # 용량 기준으로 내림차순 정렬 (큰 것부터)
-            sorted_users = sorted(result_dict.items(), key=lambda x: x[1], reverse=True)
+            sorted_users = sorted(result_dict.items(), key=lambda x: x[1]['total_size'], reverse=True)
             
             # 결과를 GUI에 표시
             self.window.add_result_to_list("=== 사용자별 파일 용량 (용량 큰 순) ===")
-            for username, total_size in sorted_users:
+            for username, user_data in sorted_users:
+                total_size = user_data['total_size']
+                file_count = len(user_data['files'])
                 formatted_size = self.format_file_size(total_size)
-                result_text = f"{username}: {formatted_size}"
-                self.window.add_result_to_list(result_text)
-                print(f"사용자: {username}, 총 용량: {formatted_size}")
+                
+                # 새로운 트리 구조로 사용자 데이터 추가
+                self.window.add_user_data(username, user_data, formatted_size)
+                
+                print(f"사용자: {username}, 총 용량: {formatted_size}, 파일 수: {file_count}")
         else:
             self.window.add_result_to_list("처리할 파일이 없습니다.")
         
@@ -115,8 +119,9 @@ class CapacityFinder:
             if username:
                 # 사용자별 용량 누적
                 if username not in self.dic_files:
-                    self.dic_files[username] = 0.0
-                self.dic_files[username] += file_size
+                    self.dic_files[username] = {'total_size': 0.0, 'files': []}
+                self.dic_files[username]['total_size'] += file_size
+                self.dic_files[username]['files'].append({'name': file_name, 'size': file_size})
             else:
                 print(f"파일명 처리 불가: {file_name}")
         
