@@ -3,14 +3,15 @@ import os
 import subprocess
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLineEdit, 
-                             QPushButton, QLabel, QMessageBox)
+                             QPushButton, QLabel, QMessageBox, QComboBox, QSplitter)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
 class MainWindow(QMainWindow):
-    def __init__(self, on_path_confirmed=None):
+    def __init__(self, on_path_confirmed=None, path_history=None):
         super().__init__()
         self.on_path_confirmed = on_path_confirmed  # 콜백 함수 저장
+        self.path_history = path_history  # 경로 기록 관리자
         self.current_path = None  # 현재 경로 저장을 위해 추가
         self.setWindowTitle("Capacity Finder")
         self.setGeometry(100, 100, 1000, 700)
@@ -35,12 +36,33 @@ class MainWindow(QMainWindow):
         self.path_label.setStyleSheet("QLabel { padding: 10px; background-color: #2c3e50; color: #ffffff; border: 2px solid #34495e; border-radius: 5px; font-weight: bold; }")
         layout.addWidget(self.path_label)
 
+        # 이전 경로 선택을 위한 콤보박스 레이아웃
+        history_layout = QHBoxLayout()
+        history_label = QLabel("이전 경로:")
+        history_label.setMinimumWidth(80)
+        history_layout.addWidget(history_label)
+        
+        self.history_combo = QComboBox()
+        self.history_combo.setEditable(False)
+        self.history_combo.setMinimumHeight(30)
+        self.history_combo.currentTextChanged.connect(self.on_history_selected)
+        history_layout.addWidget(self.history_combo, 4)
+        
+        # 새로고침 버튼 (이전 경로 목록 업데이트용)
+        self.refresh_button = QPushButton("새로고침")
+        self.refresh_button.clicked.connect(self.refresh_history)
+        self.refresh_button.setMaximumWidth(80)
+        history_layout.addWidget(self.refresh_button)
+        
+        layout.addLayout(history_layout)
+
         # 입력창과 버튼을 위한 수평 레이아웃
         input_layout = QHBoxLayout()
         
         # 텍스트 입력창
         self.path_input = QLineEdit()
-        self.path_input.setPlaceholderText("경로를 입력하세요...")
+        self.path_input.setPlaceholderText("새 경로를 입력하세요...")
+        self.path_input.returnPressed.connect(self.on_confirm_clicked)  # Enter 키 지원
         input_layout.addWidget(self.path_input, 4)
 
         # 확인 버튼
@@ -50,6 +72,9 @@ class MainWindow(QMainWindow):
 
         # 수평 레이아웃을 메인 레이아웃에 추가
         layout.addLayout(input_layout, 1)
+        
+        # 초기 이전 경로 목록 로드
+        self.refresh_history()
 
     def on_confirm_clicked(self):
         """확인 버튼 클릭 시 호출되는 함수"""
@@ -62,6 +87,9 @@ class MainWindow(QMainWindow):
             # 메인 클래스로 값 전달 (콜백 함수 호출)
             if self.on_path_confirmed:
                 self.on_path_confirmed(path_text)
+                
+            # 경로가 성공적으로 처리된 후 이전 경로 목록 새로고침
+            self.refresh_history()
         else:
             self.path_label.setText("현재 경로: 설정되지 않음")
 
@@ -159,3 +187,32 @@ class MainWindow(QMainWindow):
     def clear_results(self):
         """트리 위젯의 모든 결과를 지우는 함수"""
         self.tree_widget.clear()
+    
+    def refresh_history(self):
+        """이전 경로 목록을 새로고침하는 함수"""
+        if not self.path_history:
+            return
+        
+        self.history_combo.clear()
+        self.history_combo.addItem("-- 이전 경로 선택 --", "")
+        
+        paths = self.path_history.get_paths()
+        for path_info in paths:
+            display_text = f"{path_info['display_name']} ({path_info['usage_count']}회)"
+            self.history_combo.addItem(display_text, path_info['path'])
+        
+        print(f"이전 경로 목록 새로고침: {len(paths)}개 항목")
+    
+    def on_history_selected(self):
+        """이전 경로가 선택되었을 때 호출되는 함수"""
+        if self.history_combo.currentIndex() <= 0:  # 첫 번째 아이템("-- 이전 경로 선택 --")이거나 유효하지 않은 선택
+            return
+        
+        selected_path = self.history_combo.currentData()
+        if selected_path and selected_path.strip():
+            # 선택된 경로를 입력창에 설정하고 자동으로 확인
+            self.path_input.setText(selected_path)
+            self.on_confirm_clicked()
+            
+            # 다시 기본 선택으로 되돌리기
+            self.history_combo.setCurrentIndex(0)
