@@ -3,8 +3,10 @@ import os
 import subprocess
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLineEdit, 
-                             QPushButton, QLabel, QMessageBox, QComboBox, QSplitter)
+                             QPushButton, QLabel, QMessageBox, QComboBox, QSplitter,
+                             QDialog)
 from path_dialog import PathSelectionDialog
+from decision_dialog import ModelDecisionDialog
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
@@ -14,6 +16,7 @@ class MainWindow(QMainWindow):
         self.on_path_confirmed = on_path_confirmed  # 콜백 함수 저장
         self.path_history = path_history  # 경로 기록 관리자
         self.current_path = None  # 현재 경로 저장을 위해 추가
+        self.capacity_finder = None  # CapacityFinder 인스턴스 참조 저장
         # 정렬을 위한 사용자 데이터 저장
         self.users_data = {}  # {username: {user_data: dict, formatted_size: str}}
         self.current_sort_column = 1  # 기본값: 크기로 정렬 (0: 이름, 1: 크기, 2: 파일 수)
@@ -104,8 +107,36 @@ class MainWindow(QMainWindow):
             }
         """)
         
+        # 모델 정리 버튼 추가
+        self.model_cleanup_button = QPushButton("🗑️ 모델 정리 도우미")
+        self.model_cleanup_button.clicked.connect(self.open_model_decision_dialog)
+        self.model_cleanup_button.setMinimumHeight(40)
+        self.model_cleanup_button.setEnabled(False)
+        self.model_cleanup_button.setStyleSheet("""
+            QPushButton {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 10px;
+            }
+            QPushButton:hover:enabled {
+                background-color: #c0392b;
+            }
+            QPushButton:pressed:enabled {
+                background-color: #a93226;
+            }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+                color: #7f8c8d;
+            }
+        """)
+        
         path_button_layout.addWidget(self.select_path_button, 3)
         path_button_layout.addWidget(self.quick_rescan_button, 1)
+        path_button_layout.addWidget(self.model_cleanup_button, 1)
         
         layout.addLayout(path_button_layout, 1)
 
@@ -134,6 +165,118 @@ class MainWindow(QMainWindow):
         # 메인 클래스로 값 전달 (콜백 함수 호출)
         if self.on_path_confirmed:
             self.on_path_confirmed(path)
+
+    def set_capacity_finder(self, capacity_finder):
+        """CapacityFinder 인스턴스 설정"""
+        self.capacity_finder = capacity_finder
+        # 데이터가 있을 때만 모델 정리 버튼 활성화
+        if capacity_finder and capacity_finder.dic_files:
+            self.model_cleanup_button.setEnabled(True)
+
+    def update_cleanup_button_state(self):
+        """모델 정리 버튼 상태 업데이트"""
+        if self.capacity_finder and self.capacity_finder.dic_files:
+            self.model_cleanup_button.setEnabled(True)
+        else:
+            self.model_cleanup_button.setEnabled(False)
+
+    def open_model_decision_dialog(self):
+        """모델 결정 다이얼로그 열기"""
+        if not self.capacity_finder or not self.capacity_finder.dic_files:
+            QMessageBox.warning(self, "데이터 없음", "먼저 경로를 선택하고 파일을 분석해주세요.")
+            return
+        
+        # 결정 리스트 생성
+        decision_data = self.capacity_finder.create_decision_list()
+        
+        if not decision_data:
+            QMessageBox.information(self, "데이터 없음", "분석할 모델 데이터가 없습니다.")
+            return
+        
+        # 팝업 다이얼로그 열기
+        dialog = ModelDecisionDialog(decision_data, self.current_path, self)
+        if dialog.exec_() == QDialog.Accepted:
+            decisions, total_savings = dialog.get_decisions()
+            self.process_deletion_decisions(decisions, total_savings)
+
+    def process_deletion_decisions(self, decisions, total_savings):
+        """삭제 결정 처리"""
+        delete_models = [username for username, decision in decisions.items() if decision == 'delete']
+        
+        if not delete_models:
+            QMessageBox.information(self, "완료", "삭제할 모델이 선택되지 않았습니다.")
+            return
+        
+        # 최종 확인
+        msg = QMessageBox()
+        msg.setWindowTitle("최종 확인")
+        msg.setText(f"""
+정말로 다음 모델들의 모든 파일을 삭제하시겠습니까?
+
+삭제할 모델: {len(delete_models)}개
+절약될 용량: {self.format_file_size(total_savings)}
+
+⚠️ 이 작업은 되돌릴 수 없습니다!
+
+삭제할 모델들:
+{chr(10).join(delete_models)}
+        """)
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+        msg.setIcon(QMessageBox.Warning)
+        
+        if msg.exec_() == QMessageBox.Yes:
+            self.execute_file_deletions(delete_models, total_savings)
+
+    def execute_file_deletions(self, delete_models, total_savings):
+        """실제 파일 삭제 실행"""
+        if not self.current_path or not self.capacity_finder:
+            return
+        
+        deleted_count = 0
+        error_count = 0
+        
+        try:
+            for username in delete_models:
+                if username in self.capacity_finder.dic_files:
+                    user_files = self.capacity_finder.dic_files[username]['files']
+                    
+                    for file_info in user_files:
+                        file_path = os.path.join(self.current_path, file_info['name'])
+                        try:
+                            if os.path.exists(file_path):
+                                os.remove(file_path)
+                                deleted_count += 1
+                                print(f"삭제됨: {file_path}")
+                            else:
+                                print(f"파일 없음: {file_path}")
+                        except Exception as e:
+                            error_count += 1
+                            print(f"삭제 오류: {file_path}, 에러: {e}")
+            
+            # 결과 메시지
+            result_msg = f"""
+🗑️ 파일 삭제 완료!
+
+삭제된 파일: {deleted_count}개
+오류 발생: {error_count}개
+절약된 용량: {self.format_file_size(total_savings)}
+
+경로를 다시 스캔하시겠습니까?
+            """
+            
+            msg = QMessageBox()
+            msg.setWindowTitle("삭제 완료")
+            msg.setText(result_msg)
+            msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            msg.setDefaultButton(QMessageBox.Yes)
+            
+            if msg.exec_() == QMessageBox.Yes:
+                # 재스캔 실행
+                self.quick_rescan()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "삭제 오류", f"파일 삭제 중 오류가 발생했습니다:\n{str(e)}")
 
     def on_item_double_clicked(self, item, column):
         """트리 아이템 더블클릭 시 호출되는 함수"""

@@ -172,8 +172,13 @@ class CapacityFinder:
                 self.window.add_user_data(username, user_data, formatted_size)
                 
                 print(f"사용자: {username}, 총 용량: {formatted_size}, 파일 수: {file_count}")
+            
+            # CapacityFinder 인스턴스를 GUI에 설정하고 모델 정리 버튼 활성화
+            self.window.set_capacity_finder(self)
+            self.window.update_cleanup_button_state()
         else:
             self.window.add_result_to_list("처리할 파일이 없습니다.")
+            self.window.update_cleanup_button_state()
         
     def listing_files_capacity(self) -> list:
         """파일 용량을 계산하는 함수"""
@@ -280,6 +285,92 @@ class CapacityFinder:
         except Exception as e:
             print(f"파일명 처리 중 오류: {file_name}, 에러: {e}")
             return None
+
+    def extract_date_from_filename(self, file_name):
+        """파일명에서 날짜 추출"""
+        try:
+            date_match = self.date_pattern.search(file_name)
+            if date_match:
+                date_str = date_match.group()
+                # 2025-06-26T15_09_46+09_00 -> datetime 변환
+                file_date = datetime.fromisoformat(date_str.replace('_', ':'))
+                return file_date
+        except Exception as e:
+            print(f"날짜 추출 오류: {file_name}, 에러: {e}")
+        return None
+
+    def select_representative_samples(self, files):
+        """더 대표성 있는 샘플 선택"""
+        if len(files) <= 5:
+            return files  # 파일 적으면 다 보여주기
+        
+        samples = []
+        
+        # 파일들을 날짜순으로 정렬
+        files_with_dates = []
+        for file_info in files:
+            file_date = self.extract_date_from_filename(file_info['name'])
+            if file_date:
+                files_with_dates.append({'file': file_info, 'date': file_date})
+        
+        if not files_with_dates:
+            return files[:5]  # 날짜 추출 실패시 첫 5개
+        
+        files_with_dates.sort(key=lambda x: x['date'])
+        sorted_files = [item['file'] for item in files_with_dates]
+        
+        # 1. 가장 최근 파일
+        samples.append(sorted_files[-1])
+        
+        # 2. 가장 큰 파일  
+        largest_file = max(files, key=lambda x: x['size'])
+        if largest_file not in samples:
+            samples.append(largest_file)
+        
+        # 3. 시간대별 분산 샘플 (처음/중간)
+        if len(sorted_files) > 2:
+            # 첫 기록
+            if sorted_files[0] not in samples:
+                samples.append(sorted_files[0])
+            # 중간
+            middle_file = sorted_files[len(sorted_files)//2]
+            if middle_file not in samples:
+                samples.append(middle_file)
+        
+        # 4. 남은 자리에 다른 파일들
+        for file_info in files:
+            if file_info not in samples and len(samples) < 5:
+                samples.append(file_info)
+        
+        return samples[:5]  # 최대 5개
+
+    def create_decision_list(self):
+        """결정하기 쉬운 형태로 정리"""
+        if not self.dic_files:
+            print("분석할 데이터가 없습니다.")
+            return []
+        
+        # 용량 큰 순으로 정렬
+        sorted_models = sorted(
+            self.dic_files.items(), 
+            key=lambda x: x[1]['total_size'], 
+            reverse=True
+        )
+        
+        decision_list = []
+        for username, data in sorted_models:
+            # 대표 파일들 선택
+            sample_files = self.select_representative_samples(data['files'])
+            
+            decision_list.append({
+                'username': username,
+                'total_size': data['total_size'],
+                'file_count': len(data['files']),
+                'sample_files': sample_files,
+                'potential_savings': data['total_size']  # 삭제시 절약 용량
+            })
+        
+        return decision_list
 
 def main():
     """메인 함수에서 GUI 애플리케이션을 실행합니다."""
