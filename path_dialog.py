@@ -115,10 +115,19 @@ class PathSelectionDialog(QDialog):
         self.validity_label.setStyleSheet("QLabel { padding: 5px; background-color: #f39c12; color: white; border-radius: 3px; }")
         new_path_layout.addWidget(self.validity_label)
         
+        # 상세 정보 표시 옵션
+        detail_option_layout = QHBoxLayout()
+        self.show_detail_check = QCheckBox("📊 폴더 상세 정보 표시 (느린 네트워크에서 체크 해제 권장)")
+        self.show_detail_check.setChecked(False)  # FTP 사용자를 위해 기본적으로 빠른 모드
+        self.show_detail_check.stateChanged.connect(self.on_detail_option_changed)
+        detail_option_layout.addWidget(self.show_detail_check)
+        detail_option_layout.addStretch()
+        new_path_layout.addLayout(detail_option_layout)
+        
         # 경로 정보 표시 (파일 개수 등)
         self.path_info_text = QTextEdit()
         self.path_info_text.setMaximumHeight(150)
-        self.path_info_text.setPlaceholderText("유효한 경로를 입력하면 폴더 정보가 표시됩니다...")
+        self.path_info_text.setPlaceholderText("유효한 경로를 입력하면 기본 정보가 표시됩니다. 상세 정보는 위 체크박스를 선택하세요.")
         self.path_info_text.setReadOnly(True)
         new_path_layout.addWidget(self.path_info_text)
         
@@ -222,7 +231,9 @@ class PathSelectionDialog(QDialog):
         """이전 경로 더블클릭으로 즉시 선택"""
         if item.flags() & Qt.ItemIsEnabled:
             path = item.data(Qt.UserRole)
-            if path and os.path.exists(path):
+            if path:
+                # FTP 접근 시간 단축을 위해 존재 체크 생략
+                # (이전에 사용했던 경로이므로 대부분 유효할 것으로 가정)
                 self.selected_path = path
                 self.accept()
     
@@ -259,6 +270,12 @@ class PathSelectionDialog(QDialog):
         """경로 입력 변경 처리"""
         self.validate_path(text)
     
+    def on_detail_option_changed(self):
+        """상세 정보 표시 옵션 변경 처리"""
+        current_path = self.path_input.text().strip()
+        if current_path:
+            self.validate_path(current_path)
+    
     def validate_path(self, path):
         """경로 유효성 검사 및 정보 표시"""
         if not path.strip():
@@ -287,38 +304,68 @@ class PathSelectionDialog(QDialog):
         self.validity_label.setStyleSheet("QLabel { padding: 5px; background-color: #27ae60; color: white; border-radius: 3px; }")
         self.ok_button.setEnabled(True)
         
-        # 폴더 정보 표시
-        try:
-            files = os.listdir(path)
-            file_count = len([f for f in files if os.path.isfile(os.path.join(path, f))])
-            dir_count = len([f for f in files if os.path.isdir(os.path.join(path, f))])
-            
-            info_text = f"📊 폴더 정보:\n"
+        # 상세 정보 표시 옵션 확인
+        if self.show_detail_check.isChecked():
+            # 폴더 정보 표시 (네트워크 지연 가능)
+            try:
+                files = os.listdir(path)
+                file_count = len([f for f in files if os.path.isfile(os.path.join(path, f))])
+                dir_count = len([f for f in files if os.path.isdir(os.path.join(path, f))])
+                
+                info_text = f"📊 폴더 정보:\n"
+                info_text += f"📁 경로: {path}\n"
+                info_text += f"📄 파일 수: {file_count}개\n"
+                info_text += f"📂 하위 폴더 수: {dir_count}개\n\n"
+                
+                if file_count > 0:
+                    info_text += "📋 최근 파일 (최대 5개):\n"
+                    recent_files = sorted([f for f in files if os.path.isfile(os.path.join(path, f))])[:5]
+                    for i, filename in enumerate(recent_files, 1):
+                        info_text += f"  {i}. {filename}\n"
+                
+                self.path_info_text.setText(info_text)
+                
+            except Exception as e:
+                self.path_info_text.setText(f"폴더 정보를 가져올 수 없습니다: {str(e)}")
+        else:
+            # 빠른 모드: 기본 정보만 표시
+            info_text = f"⚡ 빠른 모드 - 기본 정보:\n"
             info_text += f"📁 경로: {path}\n"
-            info_text += f"📄 파일 수: {file_count}개\n"
-            info_text += f"📂 하위 폴더 수: {dir_count}개\n\n"
-            
-            if file_count > 0:
-                info_text += "📋 최근 파일 (최대 5개):\n"
-                recent_files = sorted([f for f in files if os.path.isfile(os.path.join(path, f))])[:5]
-                for i, filename in enumerate(recent_files, 1):
-                    info_text += f"  {i}. {filename}\n"
+            info_text += f"✅ 경로 접근 가능\n\n"
+            info_text += "💡 상세 정보를 보려면 위의 체크박스를 선택하세요.\n"
+            info_text += "   (네트워크 드라이브에서는 시간이 오래 걸릴 수 있습니다)"
             
             self.path_info_text.setText(info_text)
-            
-        except Exception as e:
-            self.path_info_text.setText(f"폴더 정보를 가져올 수 없습니다: {str(e)}")
         
         return True
     
     def validate_and_accept(self):
         """경로 검증 후 다이얼로그 종료"""
         path = self.path_input.text().strip()
-        if self.validate_path(path):
+        
+        # 빠른 모드에서는 최소 검증만 수행
+        if not self.show_detail_check.isChecked():
+            # 빠른 검증: 기본적인 체크만
+            if not path.strip():
+                QMessageBox.warning(self, "경고", "경로를 입력해주세요.")
+                return
+            if not os.path.exists(path):
+                QMessageBox.warning(self, "경고", "존재하지 않는 경로입니다.")
+                return
+            if not os.path.isdir(path):
+                QMessageBox.warning(self, "경고", "폴더가 아닙니다.")
+                return
+            
+            # 빠른 모드에서는 추가 검증 없이 바로 승인
             self.selected_path = path
             self.accept()
         else:
-            QMessageBox.warning(self, "경고", "유효한 경로를 입력해주세요.")
+            # 상세 모드에서는 전체 검증 수행
+            if self.validate_path(path):
+                self.selected_path = path
+                self.accept()
+            else:
+                QMessageBox.warning(self, "경고", "유효한 경로를 입력해주세요.")
     
     def get_selected_path(self):
         """선택된 경로 반환"""

@@ -372,6 +372,318 @@ class CapacityFinder:
         
         return decision_list
 
+    def compare_user_sites(self, username):
+        """특정 사용자의 사이트별 파일 비교 및 중복 제거 추천
+        
+        Args:
+            username: 비교할 사용자명
+            
+        Returns:
+            dict: {
+                'files_to_delete': [{'name': str, 'size': float, 'site': str, 'date': str}],
+                'total_savings': float,
+                'username': str,
+                'comparison_results': [dict]  # 비교 결과 상세
+            }
+        """
+        if username not in self.dic_files:
+            return None
+        
+        user_files = self.dic_files[username]['files']
+        
+        # 파일들을 사이트별, 날짜별로 그룹화
+        date_site_groups = {}  # {date: {site: [files]}}
+        
+        for file_info in user_files:
+            file_name = file_info['name']
+            file_size = file_info['size']
+            
+            # 파일명에서 사이트와 날짜 추출
+            site, date_str = self.extract_site_and_date(file_name)
+            if not site or not date_str:
+                continue
+            
+            if date_str not in date_site_groups:
+                date_site_groups[date_str] = {}
+            
+            if site not in date_site_groups[date_str]:
+                date_site_groups[date_str][site] = []
+            
+            date_site_groups[date_str][site].append({
+                'name': file_name,
+                'size': file_size,
+                'site': site,
+                'date': date_str
+            })
+        
+        # 같은 날짜에 여러 사이트가 있는 경우 용량 비교
+        files_to_delete = []
+        comparison_results = []
+        total_savings = 0
+        
+        for date_str, sites in date_site_groups.items():
+            if len(sites) <= 1:
+                continue  # 사이트가 하나뿐이면 비교할 필요 없음
+            
+            # 사이트별 총 용량 계산
+            site_totals = {}
+            for site, files in sites.items():
+                site_totals[site] = sum(f['size'] for f in files)
+            
+            # 가장 큰 용량의 사이트 찾기
+            max_site = max(site_totals.items(), key=lambda x: x[1])
+            max_site_name = max_site[0]
+            max_size = max_site[1]
+            
+            # 다른 사이트들의 파일을 삭제 대상으로 추가
+            comparison_result = {
+                'date': date_str,
+                'sites': {},
+                'keep_site': max_site_name,
+                'delete_sites': []
+            }
+            
+            for site, files in sites.items():
+                site_total = site_totals[site]
+                comparison_result['sites'][site] = {
+                    'files': files,
+                    'total_size': site_total,
+                    'file_count': len(files)
+                }
+                
+                if site != max_site_name:
+                    # 작은 용량의 사이트 파일들을 삭제 대상에 추가
+                    for file_info in files:
+                        files_to_delete.append(file_info)
+                        total_savings += file_info['size']
+                    comparison_result['delete_sites'].append(site)
+            
+            comparison_results.append(comparison_result)
+        
+        return {
+            'files_to_delete': files_to_delete,
+            'total_savings': total_savings,
+            'username': username,
+            'comparison_results': comparison_results
+        }
+    
+    def extract_site_and_date(self, file_name):
+        """파일명에서 사이트와 날짜를 추출
+        
+        Args:
+            file_name: 파일명
+            
+        Returns:
+            tuple: (site, date_str) 또는 (None, None)
+        """
+        if not file_name:
+            return None, None
+            
+        try:
+            # 확장자 제거
+            name_without_ext = file_name.split('.')[0] if '.' in file_name else file_name
+            
+            # 날짜 패턴 찾기
+            date_match = self.date_pattern.search(name_without_ext)
+            if not date_match:
+                return None, None
+            
+            date_part = date_match.group()
+            date_start = date_match.start()
+            
+            # 날짜 이전 부분 추출
+            before_date = name_without_ext[:date_start].rstrip('-')
+            
+            # '-'로 분리
+            parts = before_date.split('-')
+            
+            if len(parts) < 2:
+                return None, None
+            
+            # 사이트 찾기
+            for part in parts:
+                if SiteType.is_valid_site(part):
+                    # 날짜에서 시간 부분만 추출해서 날짜로 변환 (2025-06-26 형식)
+                    date_only = date_part.split('T')[0] if 'T' in date_part else date_part
+                    return part, date_only
+            
+            return None, None
+                    
+        except Exception as e:
+            print(f"사이트/날짜 추출 중 오류: {file_name}, 에러: {e}")
+            return None, None
+
+    def get_available_users(self):
+        """분석된 사용자 목록 반환"""
+        if not self.dic_files:
+            return []
+        return list(self.dic_files.keys())
+
+    def calculate_file_score(self, file_info, user_files):
+        """파일의 메타데이터 기반 점수 계산
+        
+        Args:
+            file_info: 개별 파일 정보
+            user_files: 해당 사용자의 전체 파일 목록
+            
+        Returns:
+            float: 0.0 ~ 1.0 사이의 점수
+        """
+        file_name = file_info['name']
+        file_size = file_info['size']
+        
+        # 기본 점수 구성 요소들
+        size_score = 0.0
+        rarity_score = 0.0
+        date_score = 0.0
+        
+        try:
+            # 1. 파일 크기 점수 (60% 가중치) - 증가
+            all_sizes = [f['size'] for f in user_files]
+            if all_sizes:
+                max_size = max(all_sizes)
+                min_size = min(all_sizes)
+                if max_size > min_size:
+                    # 크기 점수를 더 관대하게 계산 (상위 30% 이상이면 0.8+ 점수)
+                    normalized_score = (file_size - min_size) / (max_size - min_size)
+                    # 제곱근 적용해서 중간값들도 더 높은 점수 받도록
+                    size_score = min(normalized_score ** 0.5, 1.0)
+                else:
+                    size_score = 1.0
+            
+            # 2. 희귀성 점수 (25% 가중치) - 증가
+            file_date = self.extract_date_from_filename(file_name)
+            if file_date:
+                # 같은 날짜의 파일 수가 적을수록 희귀함
+                same_date_count = 0
+                for f in user_files:
+                    f_date = self.extract_date_from_filename(f['name'])
+                    if f_date and f_date.date() == file_date.date():
+                        same_date_count += 1
+                
+                if same_date_count <= 1:
+                    rarity_score = 1.0
+                elif same_date_count <= 2:
+                    rarity_score = 0.9
+                elif same_date_count <= 3:
+                    rarity_score = 0.8
+                elif same_date_count <= 5:
+                    rarity_score = 0.7
+                else:
+                    rarity_score = 0.5
+            else:
+                # 날짜를 추출할 수 없는 파일은 중간 점수
+                rarity_score = 0.6
+            
+            # 3. 날짜 점수 (15% 가중치) - 증가, 최근일수록 높은 점수
+            if file_date:
+                all_dates = []
+                for f in user_files:
+                    f_date = self.extract_date_from_filename(f['name'])
+                    if f_date:
+                        all_dates.append(f_date)
+                
+                if all_dates:
+                    all_dates.sort()
+                    oldest = all_dates[0]
+                    newest = all_dates[-1]
+                    
+                    if newest > oldest:
+                        total_days = (newest - oldest).days
+                        file_days = (file_date - oldest).days
+                        date_score = file_days / total_days if total_days > 0 else 1.0
+                    else:
+                        date_score = 1.0
+                else:
+                    date_score = 0.8
+            else:
+                # 날짜를 추출할 수 없는 파일은 중간 점수
+                date_score = 0.5
+        
+        except Exception as e:
+            print(f"점수 계산 오류: {file_name}, 에러: {e}")
+            return 0.6  # 기본값을 0.6으로 상향
+        
+        # 가중 평균 계산 (시간 점수 제거, 다른 요소들 가중치 증가)
+        final_score = (size_score * 0.6 + rarity_score * 0.25 + date_score * 0.15)
+        
+        # 추가 보너스: 매우 큰 파일에게 보너스 점수
+        if all_sizes:
+            size_percentile = (file_size - min(all_sizes)) / (max(all_sizes) - min(all_sizes)) if max(all_sizes) > min(all_sizes) else 1.0
+            if size_percentile >= 0.9:  # 상위 10% 크기
+                final_score = min(final_score + 0.1, 1.0)
+            elif size_percentile >= 0.8:  # 상위 20% 크기
+                final_score = min(final_score + 0.05, 1.0)
+        
+        return min(max(final_score, 0.0), 1.0)  # 0.0 ~ 1.0 사이로 클램핑
+
+    def get_user_files_with_scores(self, username):
+        """특정 사용자의 파일들을 점수와 함께 반환
+        
+        Args:
+            username: 사용자명
+            
+        Returns:
+            list: [{'name': str, 'size': float, 'score': float, 'rank': int}, ...]
+        """
+        if username not in self.dic_files:
+            return []
+        
+        user_files = self.dic_files[username]['files']
+        
+        # 각 파일에 점수 추가
+        files_with_scores = []
+        for file_info in user_files:
+            score = self.calculate_file_score(file_info, user_files)
+            files_with_scores.append({
+                'name': file_info['name'],
+                'size': file_info['size'],
+                'score': score,
+                'rank': 0  # 나중에 설정
+            })
+        
+        # 점수 기준으로 정렬 (높은 점수부터)
+        files_with_scores.sort(key=lambda x: x['score'], reverse=True)
+        
+        # 순위 설정
+        for i, file_info in enumerate(files_with_scores):
+            file_info['rank'] = i + 1
+        
+        return files_with_scores
+
+    def get_selection_candidates(self, username, top_n=50):
+        """선별 후보 파일들 반환 (상위 N개)
+        
+        Args:
+            username: 사용자명
+            top_n: 후보로 선택할 파일 수
+            
+        Returns:
+            dict: {
+                'candidates': list,  # 선별 후보 파일들
+                'excluded': list,    # 자동 제외된 파일들
+                'total_files': int,  # 전체 파일 수
+                'username': str
+            }
+        """
+        if username not in self.dic_files:
+            return None
+        
+        all_files = self.get_user_files_with_scores(username)
+        total_files = len(all_files)
+        
+        # 상위 N개를 후보로 선택
+        top_n = min(top_n, total_files)
+        candidates = all_files[:top_n]
+        excluded = all_files[top_n:]
+        
+        return {
+            'candidates': candidates,
+            'excluded': excluded,
+            'total_files': total_files,
+            'username': username
+        }
+
 def main():
     """메인 함수에서 GUI 애플리케이션을 실행합니다."""
     app = QApplication(sys.argv)

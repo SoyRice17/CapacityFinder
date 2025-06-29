@@ -7,6 +7,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QDialog)
 from path_dialog import PathSelectionDialog
 from decision_dialog import ModelDecisionDialog
+from user_site_comparison_dialog import UserSiteComparisonDialog
+from accurate_selection_dialog import AccurateSelectionDialog
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
@@ -108,7 +110,7 @@ class MainWindow(QMainWindow):
         """)
         
         # 모델 정리 버튼 추가
-        self.model_cleanup_button = QPushButton("🗑️ 모델 정리 도우미")
+        self.model_cleanup_button = QPushButton("🗑️ 기존 정리도우미")
         self.model_cleanup_button.clicked.connect(self.open_model_decision_dialog)
         self.model_cleanup_button.setMinimumHeight(40)
         self.model_cleanup_button.setEnabled(False)
@@ -134,9 +136,65 @@ class MainWindow(QMainWindow):
             }
         """)
         
+        # 특정 유저 사이트 비교 버튼 추가
+        self.user_site_comparison_button = QPushButton("⚖️ 유저 사이트 비교")
+        self.user_site_comparison_button.clicked.connect(self.open_user_site_comparison_dialog)
+        self.user_site_comparison_button.setMinimumHeight(40)
+        self.user_site_comparison_button.setEnabled(False)
+        self.user_site_comparison_button.setStyleSheet("""
+            QPushButton {
+                background-color: #9b59b6;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 10px;
+            }
+            QPushButton:hover:enabled {
+                background-color: #8e44ad;
+            }
+            QPushButton:pressed:enabled {
+                background-color: #7d3c98;
+            }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+                color: #7f8c8d;
+            }
+        """)
+        
+        # 정확한 선별도우미 버튼 추가
+        self.accurate_selection_button = QPushButton("🎯 정확한 선별도우미")
+        self.accurate_selection_button.clicked.connect(self.open_accurate_selection_dialog)
+        self.accurate_selection_button.setMinimumHeight(40)
+        self.accurate_selection_button.setEnabled(False)
+        self.accurate_selection_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f39c12;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 10px;
+            }
+            QPushButton:hover:enabled {
+                background-color: #e67e22;
+            }
+            QPushButton:pressed:enabled {
+                background-color: #d35400;
+            }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+                color: #7f8c8d;
+            }
+        """)
+        
         path_button_layout.addWidget(self.select_path_button, 3)
         path_button_layout.addWidget(self.quick_rescan_button, 1)
         path_button_layout.addWidget(self.model_cleanup_button, 1)
+        path_button_layout.addWidget(self.user_site_comparison_button, 1)
+        path_button_layout.addWidget(self.accurate_selection_button, 1)
         
         layout.addLayout(path_button_layout, 1)
 
@@ -174,11 +232,15 @@ class MainWindow(QMainWindow):
             self.model_cleanup_button.setEnabled(True)
 
     def update_cleanup_button_state(self):
-        """모델 정리 버튼 상태 업데이트"""
+        """모델 정리 버튼들 상태 업데이트"""
         if self.capacity_finder and self.capacity_finder.dic_files:
             self.model_cleanup_button.setEnabled(True)
+            self.user_site_comparison_button.setEnabled(True)
+            self.accurate_selection_button.setEnabled(True)
         else:
             self.model_cleanup_button.setEnabled(False)
+            self.user_site_comparison_button.setEnabled(False)
+            self.accurate_selection_button.setEnabled(False)
 
     def open_model_decision_dialog(self):
         """모델 결정 다이얼로그 열기"""
@@ -198,6 +260,162 @@ class MainWindow(QMainWindow):
         if dialog.exec_() == QDialog.Accepted:
             decisions, total_savings = dialog.get_decisions()
             self.process_deletion_decisions(decisions, total_savings)
+
+    def open_user_site_comparison_dialog(self):
+        """특정 유저 사이트 비교 다이얼로그 열기"""
+        if not self.capacity_finder or not self.capacity_finder.dic_files:
+            QMessageBox.warning(self, "데이터 없음", "먼저 경로를 선택하고 파일을 분석해주세요.")
+            return
+        
+        # 유저 사이트 비교 다이얼로그 열기
+        dialog = UserSiteComparisonDialog(self.capacity_finder, self.current_path, self)
+        if dialog.exec_() == QDialog.Accepted:
+            result = dialog.get_result()
+            if result:
+                self.process_site_comparison_result(result)
+
+    def open_accurate_selection_dialog(self):
+        """정확한 선별도우미 다이얼로그 열기"""
+        if not self.capacity_finder or not self.capacity_finder.dic_files:
+            QMessageBox.warning(self, "데이터 없음", "먼저 경로를 선택하고 파일을 분석해주세요.")
+            return
+        
+        # 정확한 선별 다이얼로그 열기
+        dialog = AccurateSelectionDialog(self.capacity_finder, self.current_path, self)
+        if dialog.exec_() == QDialog.Accepted:
+            result = dialog.get_result()
+            if result:
+                self.process_accurate_selection_result(result)
+
+    def process_site_comparison_result(self, result):
+        """사이트 비교 결과 처리"""
+        if not result.get('files_to_delete'):
+            QMessageBox.information(self, "결과", "삭제할 파일이 없습니다.")
+            return
+        
+        files_to_delete = result['files_to_delete']
+        total_savings = result['total_savings']
+        username = result['username']
+        
+        # 확인 메시지
+        msg = f"사용자 '{username}'의 중복 파일 {len(files_to_delete)}개를 삭제하시겠습니까?\n"
+        msg += f"절약될 용량: {self.format_file_size(total_savings)}\n\n"
+        msg += "삭제할 파일들:\n"
+        for file_info in files_to_delete[:5]:  # 처음 5개만 표시
+            msg += f"- {file_info['name']} ({self.format_file_size(file_info['size'])})\n"
+        if len(files_to_delete) > 5:
+            msg += f"... 외 {len(files_to_delete) - 5}개\n"
+        
+        reply = QMessageBox.question(
+            self, "삭제 확인", msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.execute_site_comparison_deletions(files_to_delete, total_savings, username)
+
+    def execute_site_comparison_deletions(self, files_to_delete, total_savings, username):
+        """사이트 비교 결과에 따른 파일 삭제 실행"""
+        if not self.current_path:
+            QMessageBox.warning(self, "오류", "현재 경로가 설정되지 않았습니다.")
+            return
+        
+        deleted_count = 0
+        failed_count = 0
+        
+        for file_info in files_to_delete:
+            file_path = os.path.join(self.current_path, file_info['name'])
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    deleted_count += 1
+                    print(f"삭제됨: {file_info['name']}")
+                else:
+                    failed_count += 1
+                    print(f"파일 없음: {file_info['name']}")
+            except Exception as e:
+                failed_count += 1
+                print(f"삭제 실패: {file_info['name']}, 오류: {e}")
+        
+        # 결과 메시지
+        result_msg = f"사용자 '{username}' 파일 정리 완료!\n\n"
+        result_msg += f"삭제된 파일: {deleted_count}개\n"
+        if failed_count > 0:
+            result_msg += f"삭제 실패: {failed_count}개\n"
+        result_msg += f"절약된 용량: {self.format_file_size(total_savings)}"
+        
+        QMessageBox.information(self, "삭제 완료", result_msg)
+        
+        # 현재 경로 재탐색
+        if self.on_path_confirmed:
+            self.on_path_confirmed(self.current_path)
+
+    def process_accurate_selection_result(self, result):
+        """정확한 선별 결과 처리"""
+        if not result.get('files_to_delete'):
+            QMessageBox.information(self, "결과", "삭제할 파일이 없습니다.")
+            return
+        
+        files_to_delete = result['files_to_delete']
+        files_to_keep = result['files_to_keep']
+        total_savings = result['total_savings']
+        username = result['username']
+        
+        # 확인 메시지
+        msg = f"사용자 '{username}'의 선별되지 않은 파일 {len(files_to_delete)}개를 삭제하시겠습니까?\n"
+        msg += f"유지할 파일: {len(files_to_keep)}개\n"
+        msg += f"절약될 용량: {self.format_file_size(total_savings)}\n\n"
+        msg += "삭제할 파일들 (처음 5개):\n"
+        for file_info in files_to_delete[:5]:
+            msg += f"- {file_info['name']} ({self.format_file_size(file_info['size'])})\n"
+        if len(files_to_delete) > 5:
+            msg += f"... 외 {len(files_to_delete) - 5}개\n"
+        
+        reply = QMessageBox.question(
+            self, "선별 삭제 확인", msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.execute_accurate_selection_deletions(files_to_delete, total_savings, username)
+
+    def execute_accurate_selection_deletions(self, files_to_delete, total_savings, username):
+        """정확한 선별 결과에 따른 파일 삭제 실행"""
+        if not self.current_path:
+            QMessageBox.warning(self, "오류", "현재 경로가 설정되지 않았습니다.")
+            return
+        
+        deleted_count = 0
+        failed_count = 0
+        
+        for file_info in files_to_delete:
+            file_path = os.path.join(self.current_path, file_info['name'])
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    deleted_count += 1
+                    print(f"삭제됨: {file_info['name']}")
+                else:
+                    failed_count += 1
+                    print(f"파일 없음: {file_info['name']}")
+            except Exception as e:
+                failed_count += 1
+                print(f"삭제 실패: {file_info['name']}, 오류: {e}")
+        
+        # 결과 메시지
+        result_msg = f"사용자 '{username}' 정확한 선별 완료!\n\n"
+        result_msg += f"삭제된 파일: {deleted_count}개\n"
+        if failed_count > 0:
+            result_msg += f"삭제 실패: {failed_count}개\n"
+        result_msg += f"절약된 용량: {self.format_file_size(total_savings)}"
+        
+        QMessageBox.information(self, "선별 완료", result_msg)
+        
+        # 현재 경로 재탐색
+        if self.on_path_confirmed:
+            self.on_path_confirmed(self.current_path)
 
     def process_deletion_decisions(self, decisions, total_savings):
         """삭제 결정 처리"""
