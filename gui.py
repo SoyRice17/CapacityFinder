@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QPushButton, QLabel, QMessageBox, QComboBox, QSplitter,
                              QDialog)
 from path_dialog import PathSelectionDialog
-from decision_dialog import ModelDecisionDialog
+from decision_dialog import ModelDecisionDialog, SortSelectionDialog
 from user_site_comparison_dialog import UserSiteComparisonDialog
 from accurate_selection_dialog import AccurateSelectionDialog
 from visual_selection_dialog import VisualSelectionDialog
@@ -290,8 +290,16 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "데이터 없음", "분석할 모델 데이터가 없습니다.")
             return
         
-        # 팝업 다이얼로그 열기
-        dialog = ModelDecisionDialog(decision_data, self.current_path, self)
+        # 정렬 방식 선택 다이얼로그
+        sort_dialog = SortSelectionDialog(self)
+        if sort_dialog.exec_() != QDialog.Accepted:
+            return  # 취소 시 종료
+        
+        sort_method = sort_dialog.get_sort_method()
+        print(f"📊 선택된 정렬 방식: {sort_method}")
+        
+        # 팝업 다이얼로그 열기 (정렬 방식 전달)
+        dialog = ModelDecisionDialog(decision_data, self.current_path, sort_method, self)
         if dialog.exec_() == QDialog.Accepted:
             decisions, total_savings = dialog.get_decisions()
             self.process_deletion_decisions(decisions, total_savings)
