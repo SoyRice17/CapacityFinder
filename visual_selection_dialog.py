@@ -11,6 +11,13 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread, pyqtSlot, QSize
 from PyQt5.QtGui import QFont, QColor, QPixmap, QPainter, QPen, QBrush
 import subprocess
 
+# 로컬 하드코딩 설정 import (선택적)
+try:
+    from config_local import USE_HARDCODED_THUMBNAILS, METADATA_BASE_PATH, GRID_IMAGE_FILENAME, DEBUG_HARDCODED
+except ImportError:
+    USE_HARDCODED_THUMBNAILS = False
+    DEBUG_HARDCODED = False
+
 class ThumbnailExtractorThread(QThread):
     """썸네일 추출을 백그라운드에서 처리하는 스레드"""
     thumbnail_ready = pyqtSignal(str, QPixmap)  # 파일명, 썸네일
@@ -35,8 +42,56 @@ class ThumbnailExtractorThread(QThread):
                 if thumbnail:
                     self.thumbnail_ready.emit(file_name, thumbnail)
     
+    def load_hardcoded_thumbnail(self, video_path):
+        """하드코딩된 그리드 이미지 로드"""
+        try:
+            # 영상 파일명에서 확장자 제거하여 폴더명 추출
+            # 예: \\MYCLOUDEX2ULTRA\Private\capturegem\elimeowy-Chaturbate-2025-05-05T11_37_18+09_00.mp4
+            # -> elimeowy-Chaturbate-2025-05-05T11_37_18+09_00
+            filename_without_ext = os.path.splitext(os.path.basename(video_path))[0]
+            folder_name = filename_without_ext
+            
+            # 메타데이터 그리드 이미지 경로 구성
+            grid_path = os.path.join(METADATA_BASE_PATH, folder_name, GRID_IMAGE_FILENAME)
+            
+            if DEBUG_HARDCODED:
+                print(f"하드코딩 썸네일 시도: {grid_path}")
+            
+            # 파일 존재 확인 및 로드
+            if os.path.exists(grid_path):
+                pixmap = QPixmap(grid_path)
+                if not pixmap.isNull():
+                    # 썸네일 크기로 리사이즈
+                    scaled_pixmap = pixmap.scaled(
+                        self.thumbnail_size[0], self.thumbnail_size[1],
+                        Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    )
+                    if DEBUG_HARDCODED:
+                        print(f"하드코딩 썸네일 로드 성공: {grid_path}")
+                    return scaled_pixmap
+                else:
+                    if DEBUG_HARDCODED:
+                        print(f"하드코딩 썸네일 파일 손상: {grid_path}")
+            else:
+                if DEBUG_HARDCODED:
+                    print(f"하드코딩 썸네일 파일 없음: {grid_path}")
+                    
+        except Exception as e:
+            if DEBUG_HARDCODED:
+                print(f"하드코딩 썸네일 로드 실패: {video_path}, 오류: {e}")
+        
+        return None
+
     def extract_thumbnail(self, video_path):
         """비디오 파일에서 3x3 그리드 썸네일 추출 (퍼센트 기반)"""
+        # 하드코딩된 썸네일 우선 시도
+        if USE_HARDCODED_THUMBNAILS:
+            hardcoded_thumbnail = self.load_hardcoded_thumbnail(video_path)
+            if hardcoded_thumbnail:
+                return hardcoded_thumbnail
+            elif DEBUG_HARDCODED:
+                print(f"하드코딩 실패, ffmpeg 방식으로 fallback: {video_path}")
+        
         try:
             import tempfile
             temp_dir = tempfile.gettempdir()
@@ -326,12 +381,13 @@ class VideoThumbnailWidget(QWidget):
     selection_changed = pyqtSignal(str, bool)  # 파일명, 선택상태
     preview_requested = pyqtSignal(str)  # 미리보기 요청
     
-    def __init__(self, file_info, formatted_size):
+    def __init__(self, file_info, formatted_size, file_path=None):
         super().__init__()
         self.file_info = file_info
         self.file_name = file_info['name']
         self.file_size = file_info['size']
         self.formatted_size = formatted_size
+        self.file_path = file_path  # 전체 파일 경로
         self.is_selected = False
         self.thumbnail_pixmap = None
         self.hover_timer = QTimer()
@@ -436,6 +492,29 @@ class VideoThumbnailWidget(QWidget):
     def set_selected(self, selected):
         """외부에서 선택 상태 설정"""
         self.checkbox.setChecked(selected)
+    
+    def mouseDoubleClickEvent(self, event):
+        """더블클릭시 영상 파일 열기"""
+        if event.button() == Qt.LeftButton and self.file_path:
+            try:
+                if DEBUG_HARDCODED:
+                    print(f"영상 파일 열기 시도: {self.file_path}")
+                
+                # Windows에서 기본 프로그램으로 파일 열기
+                import os
+                os.startfile(self.file_path)
+                
+                if DEBUG_HARDCODED:
+                    print(f"영상 파일 열기 성공: {self.file_name}")
+                    
+            except Exception as e:
+                print(f"영상 파일 열기 실패: {self.file_name}, 오류: {e}")
+                # 실패 시 메시지박스 표시
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "파일 열기 실패", 
+                                  f"영상 파일을 열 수 없습니다.\n\n파일: {self.file_name}\n오류: {str(e)}")
+        
+        super().mouseDoubleClickEvent(event)
 
 class VisualSelectionDialog(QDialog):
     def __init__(self, capacity_finder, current_path, parent=None):
@@ -691,7 +770,8 @@ class VisualSelectionDialog(QDialog):
         # 썸네일 위젯 생성
         for i, file_info in enumerate(files):
             formatted_size = self.format_file_size(file_info['size'])
-            widget = VideoThumbnailWidget(file_info, formatted_size)
+            file_path = os.path.join(self.current_path, file_info['name'])
+            widget = VideoThumbnailWidget(file_info, formatted_size, file_path)
             
             # 신호 연결
             widget.selection_changed.connect(self.on_selection_changed)
