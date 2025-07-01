@@ -9,6 +9,7 @@ from path_dialog import PathSelectionDialog
 from decision_dialog import ModelDecisionDialog
 from user_site_comparison_dialog import UserSiteComparisonDialog
 from accurate_selection_dialog import AccurateSelectionDialog
+from visual_selection_dialog import VisualSelectionDialog
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 
@@ -23,6 +24,10 @@ class MainWindow(QMainWindow):
         self.users_data = {}  # {username: {user_data: dict, formatted_size: str}}
         self.current_sort_column = 1  # 기본값: 크기로 정렬 (0: 이름, 1: 크기, 2: 파일 수)
         self.current_sort_order = Qt.DescendingOrder  # 기본값: 내림차순
+        
+        # 전체 통계 정보 저장
+        self.total_size_formatted = ""
+        self.total_files_count = 0
         
         self.setWindowTitle("Capacity Finder")
         self.setGeometry(100, 100, 1000, 700)
@@ -190,11 +195,39 @@ class MainWindow(QMainWindow):
             }
         """)
         
+        # 비주얼 선별도우미 버튼 추가
+        self.visual_selection_button = QPushButton("🖼️ 비주얼 선별도우미")
+        self.visual_selection_button.clicked.connect(self.open_visual_selection_dialog)
+        self.visual_selection_button.setMinimumHeight(40)
+        self.visual_selection_button.setEnabled(False)
+        self.visual_selection_button.setStyleSheet("""
+            QPushButton {
+                background-color: #8e44ad;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 10px;
+            }
+            QPushButton:hover:enabled {
+                background-color: #7d3c98;
+            }
+            QPushButton:pressed:enabled {
+                background-color: #6c3483;
+            }
+            QPushButton:disabled {
+                background-color: #95a5a6;
+                color: #7f8c8d;
+            }
+        """)
+        
         path_button_layout.addWidget(self.select_path_button, 3)
         path_button_layout.addWidget(self.quick_rescan_button, 1)
         path_button_layout.addWidget(self.model_cleanup_button, 1)
         path_button_layout.addWidget(self.user_site_comparison_button, 1)
         path_button_layout.addWidget(self.accurate_selection_button, 1)
+        path_button_layout.addWidget(self.visual_selection_button, 1)
         
         layout.addLayout(path_button_layout, 1)
 
@@ -237,10 +270,12 @@ class MainWindow(QMainWindow):
             self.model_cleanup_button.setEnabled(True)
             self.user_site_comparison_button.setEnabled(True)
             self.accurate_selection_button.setEnabled(True)
+            self.visual_selection_button.setEnabled(True)
         else:
             self.model_cleanup_button.setEnabled(False)
             self.user_site_comparison_button.setEnabled(False)
             self.accurate_selection_button.setEnabled(False)
+            self.visual_selection_button.setEnabled(False)
 
     def open_model_decision_dialog(self):
         """모델 결정 다이얼로그 열기"""
@@ -286,6 +321,19 @@ class MainWindow(QMainWindow):
             result = dialog.get_result()
             if result:
                 self.process_accurate_selection_result(result)
+
+    def open_visual_selection_dialog(self):
+        """비주얼 선별도우미 다이얼로그 열기"""
+        if not self.capacity_finder or not self.capacity_finder.dic_files:
+            QMessageBox.warning(self, "데이터 없음", "먼저 경로를 선택하고 파일을 분석해주세요.")
+            return
+        
+        # 비주얼 선별 다이얼로그 열기
+        dialog = VisualSelectionDialog(self.capacity_finder, self.current_path, self)
+        if dialog.exec_() == QDialog.Accepted:
+            result = dialog.get_result()
+            if result:
+                self.process_visual_selection_result(result)
 
     def process_site_comparison_result(self, result):
         """사이트 비교 결과 처리"""
@@ -346,6 +394,72 @@ class MainWindow(QMainWindow):
         result_msg += f"절약된 용량: {self.format_file_size(total_savings)}"
         
         QMessageBox.information(self, "삭제 완료", result_msg)
+        
+        # 현재 경로 재탐색
+        if self.on_path_confirmed:
+            self.on_path_confirmed(self.current_path)
+
+    def process_visual_selection_result(self, result):
+        """비주얼 선별 결과 처리"""
+        if not result.get('files_to_delete'):
+            QMessageBox.information(self, "결과", "삭제할 파일이 없습니다.")
+            return
+        
+        files_to_delete = result['files_to_delete']
+        files_to_keep = result['files_to_keep']
+        total_savings = result['total_savings']
+        username = result['username']
+        
+        # 확인 메시지
+        msg = f"사용자 '{username}'의 선택되지 않은 파일 {len(files_to_delete)}개를 삭제하시겠습니까?\n"
+        msg += f"유지할 파일: {len(files_to_keep)}개\n"
+        msg += f"절약될 용량: {self.format_file_size(total_savings)}\n\n"
+        msg += "삭제할 파일들 (처음 5개):\n"
+        for file_info in files_to_delete[:5]:
+            msg += f"- {file_info['name']} ({self.format_file_size(file_info['size'])})\n"
+        if len(files_to_delete) > 5:
+            msg += f"... 외 {len(files_to_delete) - 5}개\n"
+        
+        reply = QMessageBox.question(
+            self, "비주얼 선별 삭제 확인", msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.execute_visual_selection_deletions(files_to_delete, total_savings, username)
+
+    def execute_visual_selection_deletions(self, files_to_delete, total_savings, username):
+        """비주얼 선별 결과에 따른 파일 삭제 실행"""
+        if not self.current_path:
+            QMessageBox.warning(self, "오류", "현재 경로가 설정되지 않았습니다.")
+            return
+        
+        deleted_count = 0
+        failed_count = 0
+        
+        for file_info in files_to_delete:
+            file_path = os.path.join(self.current_path, file_info['name'])
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    deleted_count += 1
+                    print(f"삭제됨: {file_info['name']}")
+                else:
+                    failed_count += 1
+                    print(f"파일 없음: {file_info['name']}")
+            except Exception as e:
+                failed_count += 1
+                print(f"삭제 실패: {file_info['name']}, 오류: {e}")
+        
+        # 결과 메시지
+        result_msg = f"사용자 '{username}' 비주얼 선별 완료!\n\n"
+        result_msg += f"삭제된 파일: {deleted_count}개\n"
+        if failed_count > 0:
+            result_msg += f"삭제 실패: {failed_count}개\n"
+        result_msg += f"절약된 용량: {self.format_file_size(total_savings)}"
+        
+        QMessageBox.information(self, "비주얼 선별 완료", result_msg)
         
         # 현재 경로 재탐색
         if self.on_path_confirmed:
@@ -561,6 +675,31 @@ class MainWindow(QMainWindow):
             # 일반 결과는 사용자 정보로 처리
             pass
 
+    def add_header_with_totals(self, title, total_size, total_count):
+        """헤더를 각 열에 맞춰 표시하는 함수"""
+        # 전체 통계 정보 저장
+        self.total_size_formatted = total_size
+        self.total_files_count = total_count
+        
+        header_item = QTreeWidgetItem(self.tree_widget)
+        header_item.setText(0, f"=== {title} ===")
+        header_item.setText(1, f"전체: {total_size}")
+        header_item.setText(2, f"{total_count}개 파일")
+        
+        # 헤더 스타일 설정
+        light_gray = QColor(211, 211, 211)
+        header_item.setBackground(0, light_gray)
+        header_item.setBackground(1, light_gray)
+        header_item.setBackground(2, light_gray)
+        
+        # 폰트 굵게 설정
+        for col in range(3):
+            font = header_item.font(col)
+            font.setBold(True)
+            header_item.setFont(col, font)
+        
+        self.tree_widget.addTopLevelItem(header_item)
+
     def add_user_data(self, username, user_data, formatted_size):
         """사용자 데이터를 트리에 추가하는 함수"""
         # 사용자 데이터 저장 (정렬을 위해)
@@ -605,6 +744,8 @@ class MainWindow(QMainWindow):
         """트리 위젯의 모든 결과를 지우는 함수"""
         self.tree_widget.clear()
         self.users_data = {}  # 저장된 사용자 데이터도 초기화
+        self.total_size_formatted = ""  # 전체 통계 정보도 초기화
+        self.total_files_count = 0
 
     def on_header_clicked(self, logicalIndex):
         """헤더 클릭 시 정렬 기능"""
@@ -634,14 +775,9 @@ class MainWindow(QMainWindow):
         # 트리 위젯 초기화
         self.tree_widget.clear()
         
-        # 헤더 다시 추가
-        header_item = QTreeWidgetItem(self.tree_widget)
-        header_item.setText(0, "=== 사용자별 파일 용량 ===")
-        header_item.setBackground(0, QColor(211, 211, 211))  # lightGray
-        font = header_item.font(0)
-        font.setBold(True)
-        header_item.setFont(0, font)
-        self.tree_widget.addTopLevelItem(header_item)
+        # 헤더 다시 추가 (저장된 전체 통계 정보 사용)
+        if self.total_size_formatted and self.total_files_count:
+            self.add_header_with_totals("사용자별 파일 용량 (용량 큰 순)", self.total_size_formatted, self.total_files_count)
         
         # 정렬된 데이터로 다시 표시 (중복 저장 방지를 위해 직접 아이템 생성)
         for username, data in sorted_items:

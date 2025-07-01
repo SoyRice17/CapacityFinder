@@ -161,8 +161,13 @@ class CapacityFinder:
             # 용량 기준으로 내림차순 정렬 (큰 것부터)
             sorted_users = sorted(result_dict.items(), key=lambda x: x[1]['total_size'], reverse=True)
             
-            # 결과를 GUI에 표시
-            self.window.add_result_to_list("=== 사용자별 파일 용량 (용량 큰 순) ===")
+            # 전체 파일 통계 계산
+            total_files_size = sum(user_data['total_size'] for _, user_data in sorted_users)
+            total_files_count = sum(len(user_data['files']) for _, user_data in sorted_users)
+            formatted_total_size = self.format_file_size(total_files_size)
+            
+            # 결과를 GUI에 표시 (헤더를 각 열에 맞춰 표시)
+            self.window.add_header_with_totals("사용자별 파일 용량 (용량 큰 순)", formatted_total_size, total_files_count)
             for username, user_data in sorted_users:
                 total_size = user_data['total_size']
                 file_count = len(user_data['files'])

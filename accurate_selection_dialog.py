@@ -87,18 +87,22 @@ class AccurateSelectionDialog(QDialog):
         button_group = QGroupBox("빠른 선택")
         button_layout = QVBoxLayout(button_group)
         
-        # 상위 N개 선택 버튼들
+        # 상위 N개 선택 - 사용자 입력
         top_buttons_layout = QHBoxLayout()
-        self.top_10_button = QPushButton("상위 10개")
-        self.top_10_button.clicked.connect(lambda: self.select_top_n(10))
-        self.top_20_button = QPushButton("상위 20개")
-        self.top_20_button.clicked.connect(lambda: self.select_top_n(20))
-        self.top_30_button = QPushButton("상위 30개")
-        self.top_30_button.clicked.connect(lambda: self.select_top_n(30))
+        top_buttons_layout.addWidget(QLabel("상위"))
         
-        top_buttons_layout.addWidget(self.top_10_button)
-        top_buttons_layout.addWidget(self.top_20_button)
-        top_buttons_layout.addWidget(self.top_30_button)
+        self.top_n_spinbox = QSpinBox()
+        self.top_n_spinbox.setRange(1, 200)
+        self.top_n_spinbox.setValue(10)
+        self.top_n_spinbox.setSuffix("개")
+        self.top_n_spinbox.setMaximumWidth(80)
+        top_buttons_layout.addWidget(self.top_n_spinbox)
+        
+        self.select_top_button = QPushButton("선택")
+        self.select_top_button.clicked.connect(self.select_custom_top_n)
+        top_buttons_layout.addWidget(self.select_top_button)
+        
+        top_buttons_layout.addStretch()
         button_layout.addLayout(top_buttons_layout)
         
         # 전체 선택/해제 버튼들
@@ -308,6 +312,11 @@ class AccurateSelectionDialog(QDialog):
                 checkbox.setChecked(i < count)
         
         self.update_stats()
+    
+    def select_custom_top_n(self):
+        """사용자가 입력한 수만큼 상위 파일 선택"""
+        n = self.top_n_spinbox.value()
+        self.select_top_n(n)
     
     def select_all(self):
         """모든 후보 파일 선택"""
