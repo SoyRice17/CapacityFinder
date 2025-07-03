@@ -12,6 +12,7 @@ import platform
 import subprocess
 import urllib.request
 import zipfile
+import tarfile
 import shutil
 from pathlib import Path
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QProgressBar, QMessageBox
@@ -127,32 +128,59 @@ class FFmpegDownloadThread(QThread):
         self.extract_path = extract_path
         
     def run(self):
+        temp_file = None
+        temp_extract_dir = None
+        
         try:
             self.status_updated.emit("다운로드 중...")
             
-            # 임시 파일 경로
-            temp_file = os.path.join(self.extract_path, "ffmpeg_temp.zip")
+            # 파일 확장자 판단
+            if self.download_url.endswith('.tar.xz'):
+                temp_file = os.path.join(self.extract_path, "ffmpeg_temp.tar.xz")
+            elif self.download_url.endswith('.zip'):
+                temp_file = os.path.join(self.extract_path, "ffmpeg_temp.zip")
+            else:
+                # 기본적으로 zip으로 가정
+                temp_file = os.path.join(self.extract_path, "ffmpeg_temp.zip")
+                
+            temp_extract_dir = os.path.join(self.extract_path, "temp_extract")
             os.makedirs(self.extract_path, exist_ok=True)
+            os.makedirs(temp_extract_dir, exist_ok=True)
             
             # 다운로드
             def progress_hook(block_num, block_size, total_size):
                 if total_size > 0:
-                    progress = (block_num * block_size / total_size) * 70  # 70%까지는 다운로드
+                    progress = (block_num * block_size / total_size) * 60  # 60%까지는 다운로드
                     self.progress_updated.emit(int(progress))
             
             urllib.request.urlretrieve(self.download_url, temp_file, progress_hook)
             
             self.status_updated.emit("압축 해제 중...")
-            self.progress_updated.emit(75)
+            self.progress_updated.emit(65)
             
-            # 압축 해제
-            with zipfile.ZipFile(temp_file, 'r') as zip_ref:
-                zip_ref.extractall(self.extract_path)
+            # 파일 형태에 따른 압축 해제
+            if temp_file.endswith('.tar.xz'):
+                # tar.xz 파일 처리 (Linux)
+                with tarfile.open(temp_file, 'r:xz') as tar_ref:
+                    tar_ref.extractall(temp_extract_dir)
+            else:
+                # zip 파일 처리 (Windows, macOS)
+                with zipfile.ZipFile(temp_file, 'r') as zip_ref:
+                    zip_ref.extractall(temp_extract_dir)
+            
+            self.progress_updated.emit(75)
+            self.status_updated.emit("폴더 구조 정리 중...")
+            
+            # 압축 해제된 폴더 구조 분석 및 정리
+            self._organize_extracted_files(temp_extract_dir)
             
             self.progress_updated.emit(90)
             
             # 임시 파일 정리
-            os.remove(temp_file)
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+            if temp_extract_dir and os.path.exists(temp_extract_dir):
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
             
             self.progress_updated.emit(100)
             self.status_updated.emit("설치 완료!")
@@ -160,7 +188,96 @@ class FFmpegDownloadThread(QThread):
             self.download_finished.emit(True, "FFmpeg 설치가 완료되었습니다!")
             
         except Exception as e:
+            # 실패 시 임시 파일들 정리
+            try:
+                if temp_file and os.path.exists(temp_file):
+                    os.remove(temp_file)
+                if temp_extract_dir and os.path.exists(temp_extract_dir):
+                    shutil.rmtree(temp_extract_dir, ignore_errors=True)
+            except:
+                pass
             self.download_finished.emit(False, f"설치 실패: {str(e)}")
+    
+    def _organize_extracted_files(self, temp_extract_dir):
+        """압축 해제된 파일들을 올바른 구조로 정리"""
+        try:
+            import stat
+            
+            # 압축 해제된 폴더 내용 확인
+            extracted_items = os.listdir(temp_extract_dir)
+            
+            if len(extracted_items) == 1 and os.path.isdir(os.path.join(temp_extract_dir, extracted_items[0])):
+                # BtbN 형태: ffmpeg-master-latest-win64-gpl/ 폴더 하나만 있는 경우
+                source_dir = os.path.join(temp_extract_dir, extracted_items[0])
+                
+                # bin 폴더가 있는지 확인
+                bin_dir = os.path.join(source_dir, 'bin')
+                if os.path.exists(bin_dir):
+                    # bin 폴더를 최종 목적지로 복사
+                    target_bin_dir = os.path.join(self.extract_path, 'bin')
+                    if os.path.exists(target_bin_dir):
+                        shutil.rmtree(target_bin_dir)
+                    shutil.copytree(bin_dir, target_bin_dir)
+                    print(f"FFmpeg 바이너리를 {target_bin_dir}로 복사 완료")
+                    
+                    # macOS/Linux에서 실행 권한 설정
+                    system = platform.system().lower()
+                    if system in ['darwin', 'linux']:
+                        for binary in ['ffmpeg', 'ffprobe', 'ffplay']:
+                            binary_path = os.path.join(target_bin_dir, binary)
+                            if os.path.exists(binary_path):
+                                os.chmod(binary_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                                print(f"실행 권한 설정: {binary_path}")
+                                
+                else:
+                    # bin 폴더가 없으면 전체 내용을 복사
+                    for item in os.listdir(source_dir):
+                        source_item = os.path.join(source_dir, item)
+                        target_item = os.path.join(self.extract_path, item)
+                        if os.path.exists(target_item):
+                            if os.path.isdir(target_item):
+                                shutil.rmtree(target_item)
+                            else:
+                                os.remove(target_item)
+                        
+                        if os.path.isdir(source_item):
+                            shutil.copytree(source_item, target_item)
+                        else:
+                            shutil.copy2(source_item, target_item)
+                            
+                        # macOS/Linux에서 실행 파일에 대한 권한 설정
+                        system = platform.system().lower()
+                        if system in ['darwin', 'linux'] and not os.path.isdir(target_item):
+                            if any(binary in os.path.basename(target_item) for binary in ['ffmpeg', 'ffprobe', 'ffplay']):
+                                os.chmod(target_item, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                                print(f"실행 권한 설정: {target_item}")
+            else:
+                # 여러 파일/폴더가 직접 압축된 경우
+                for item in extracted_items:
+                    source_item = os.path.join(temp_extract_dir, item)
+                    target_item = os.path.join(self.extract_path, item)
+                    
+                    if os.path.exists(target_item):
+                        if os.path.isdir(target_item):
+                            shutil.rmtree(target_item)
+                        else:
+                            os.remove(target_item)
+                    
+                    if os.path.isdir(source_item):
+                        shutil.copytree(source_item, target_item)
+                    else:
+                        shutil.copy2(source_item, target_item)
+                        
+                    # macOS/Linux에서 실행 파일에 대한 권한 설정
+                    system = platform.system().lower()
+                    if system in ['darwin', 'linux'] and not os.path.isdir(target_item):
+                        if any(binary in os.path.basename(target_item) for binary in ['ffmpeg', 'ffprobe', 'ffplay']):
+                            os.chmod(target_item, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+                            print(f"실행 권한 설정: {target_item}")
+                        
+        except Exception as e:
+            print(f"폴더 구조 정리 실패: {e}")
+            raise e
 
 class FFmpegProgressDialog(QDialog):
     """FFmpeg 다운로드 진행 다이얼로그"""
@@ -281,18 +398,88 @@ class FFmpegManager:
         return None, None
     
     def check_bundled_ffmpeg(self):
-        """번들된 ffmpeg 확인"""
+        """번들된 ffmpeg 확인 (다양한 구조 지원)"""
+        if not os.path.exists(self.ffmpeg_dir):
+            return None, None
+            
         system, arch = self.get_system_info()
         
-        if system == 'windows':
-            ffmpeg_path = os.path.join(self.ffmpeg_dir, 'bin', 'ffmpeg.exe')
-            ffprobe_path = os.path.join(self.ffmpeg_dir, 'bin', 'ffprobe.exe')
-        else:
-            ffmpeg_path = os.path.join(self.ffmpeg_dir, 'ffmpeg')
-            ffprobe_path = os.path.join(self.ffmpeg_dir, 'ffprobe')
+        # 가능한 경로들을 순서대로 검사
+        possible_paths = []
         
-        if os.path.exists(ffmpeg_path) and os.path.exists(ffprobe_path):
-            return ffmpeg_path, ffprobe_path
+        if system == 'windows':
+            # Windows용 가능한 경로들
+            possible_paths = [
+                # 정리된 구조 (우리가 원하는 형태)
+                (os.path.join(self.ffmpeg_dir, 'bin', 'ffmpeg.exe'),
+                 os.path.join(self.ffmpeg_dir, 'bin', 'ffprobe.exe')),
+                
+                # BtbN 압축 해제 후 남아있을 수 있는 구조들
+                (os.path.join(self.ffmpeg_dir, 'ffmpeg.exe'),
+                 os.path.join(self.ffmpeg_dir, 'ffprobe.exe')),
+            ]
+            
+            # 하위 폴더도 검사 (BtbN 압축이 정리되지 않은 경우)
+            try:
+                for item in os.listdir(self.ffmpeg_dir):
+                    item_path = os.path.join(self.ffmpeg_dir, item)
+                    if os.path.isdir(item_path):
+                        # 하위 폴더의 bin 디렉토리 확인
+                        bin_path = os.path.join(item_path, 'bin')
+                        if os.path.exists(bin_path):
+                            possible_paths.append((
+                                os.path.join(bin_path, 'ffmpeg.exe'),
+                                os.path.join(bin_path, 'ffprobe.exe')
+                            ))
+                        
+                        # 하위 폴더에 직접 있는 경우
+                        possible_paths.append((
+                            os.path.join(item_path, 'ffmpeg.exe'),
+                            os.path.join(item_path, 'ffprobe.exe')
+                        ))
+            except:
+                pass
+                
+        else:
+            # macOS/Linux용 가능한 경로들
+            possible_paths = [
+                # 정리된 구조
+                (os.path.join(self.ffmpeg_dir, 'ffmpeg'),
+                 os.path.join(self.ffmpeg_dir, 'ffprobe')),
+                
+                # bin 폴더 안
+                (os.path.join(self.ffmpeg_dir, 'bin', 'ffmpeg'),
+                 os.path.join(self.ffmpeg_dir, 'bin', 'ffprobe')),
+            ]
+            
+            # 하위 폴더도 검사
+            try:
+                for item in os.listdir(self.ffmpeg_dir):
+                    item_path = os.path.join(self.ffmpeg_dir, item)
+                    if os.path.isdir(item_path):
+                        possible_paths.append((
+                            os.path.join(item_path, 'ffmpeg'),
+                            os.path.join(item_path, 'ffprobe')
+                        ))
+                        possible_paths.append((
+                            os.path.join(item_path, 'bin', 'ffmpeg'),
+                            os.path.join(item_path, 'bin', 'ffprobe')
+                        ))
+            except:
+                pass
+        
+        # 가능한 경로들을 순서대로 확인
+        for ffmpeg_path, ffprobe_path in possible_paths:
+            if os.path.exists(ffmpeg_path) and os.path.exists(ffprobe_path):
+                # 실행 가능한지 간단히 테스트
+                try:
+                    result = subprocess.run([ffmpeg_path, '-version'], 
+                                          capture_output=True, text=True, timeout=3)
+                    if result.returncode == 0:
+                        print(f"번들된 FFmpeg 발견: {ffmpeg_path}")
+                        return ffmpeg_path, ffprobe_path
+                except:
+                    continue
         
         return None, None
     
