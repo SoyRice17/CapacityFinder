@@ -1,6 +1,9 @@
 import sys
 import os
 import json
+import math
+import time
+import shutil
 from datetime import datetime
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QComboBox, QPushButton, QScrollArea, QWidget,
@@ -14,206 +17,632 @@ import subprocess
 # FFmpeg 관리자 import
 from ffmpeg_manager import FFmpegManager
 
-# 로컬 하드코딩 설정 import (선택적)
-try:
-    from config_local import USE_HARDCODED_THUMBNAILS, METADATA_BASE_PATH, GRID_IMAGE_FILENAME, DEBUG_HARDCODED
-except ImportError:
-    USE_HARDCODED_THUMBNAILS = False
-    DEBUG_HARDCODED = False
-
 class ThumbnailExtractorThread(QThread):
     """썸네일 추출을 백그라운드에서 처리하는 스레드"""
     thumbnail_ready = pyqtSignal(str, QPixmap)  # 파일명, 썸네일
     
-    def __init__(self, file_list, thumbnail_size=(160, 120)):
+    def __init__(self, file_list, thumbnail_size=(2048, 925)):
         super().__init__()
         self.file_list = file_list
         self.thumbnail_size = thumbnail_size
         self.current_path = ""
+        self.stop_requested = False  # 중단 요청 플래그
         
         # FFmpeg 매니저 초기화
         self.ffmpeg_manager = FFmpegManager()
         self.ffmpeg_path, self.ffprobe_path = self.ffmpeg_manager.get_ffmpeg_paths()
         
-        if DEBUG_HARDCODED:
-            print(f"FFmpeg 경로: {self.ffmpeg_path}")
-            print(f"FFprobe 경로: {self.ffprobe_path}")
-            print(f"FFmpeg 비활성화: {self.ffmpeg_manager.is_ffmpeg_disabled()}")
-        
+    def request_stop(self):
+        """썸네일 추출 중단 요청"""
+        print("🛑 썸네일 추출 중단 요청됨")
+        self.stop_requested = True
+    
     def set_path(self, path):
         self.current_path = path
     
     def run(self):
-        """썸네일 추출 실행"""
-        for file_info in self.file_list:
-            file_name = file_info['name']
-            file_path = os.path.join(self.current_path, file_name)
+        """고성능 썸네일 배치 추출 🚀"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
+        
+        print(f"🎬 배치 썸네일 추출 시작: {len(self.file_list)}개 파일")
+        start_time = time.time()
+        
+        # 중단 요청 확인
+        if self.stop_requested:
+            print("🛑 시작 전 중단 요청으로 작업 취소")
+            return
+        
+        # 네트워크 드라이브 확인 및 적응적 스레드 수 결정
+        first_file_path = os.path.join(self.current_path, self.file_list[0]['name']) if self.file_list else ""
+        is_network_path = first_file_path.startswith('\\\\') or first_file_path.startswith('//')
+        
+        if is_network_path:
+            max_workers = 1  # 네트워크 드라이브는 순차 처리
+            print("🌐 네트워크 드라이브 감지 - 순차 썸네일 생성 모드")
+        else:
+            max_workers = min(3, len(self.file_list))  # 로컬은 최대 3개 동시 처리
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 모든 썸네일 추출 작업 제출
+            future_to_file = {}
+            for file_info in self.file_list:
+                # 중단 요청 확인 (작업 제출 단계)
+                if self.stop_requested:
+                    print(f"🛑 작업 제출 중 중단 요청됨. 제출된 작업: {len(future_to_file)}개")
+                    break
+                    
+                file_name = file_info['name'] 
+                file_path = os.path.join(self.current_path, file_name)
+                
+                if os.path.exists(file_path):
+                    future = executor.submit(self.extract_thumbnail, file_path)
+                    future_to_file[future] = file_name
             
-            if os.path.exists(file_path):
-                thumbnail = self.extract_thumbnail(file_path)
-                if thumbnail:
-                    self.thumbnail_ready.emit(file_name, thumbnail)
+            # 제출된 작업이 없으면 종료
+            if not future_to_file:
+                print("🛑 제출된 작업이 없거나 중단 요청으로 종료")
+                return
+            
+            print(f"📋 총 {len(future_to_file)}개 작업 제출됨. 진행 상황 모니터링...")
+            
+            # 결과 수집 및 발신
+            completed_count = 0
+            for future in as_completed(future_to_file, timeout=300):
+                try:
+                    # 중단 요청 확인 (결과 처리 단계)
+                    if self.stop_requested:
+                        print(f"🛑 결과 처리 중 중단 요청됨. 완료된 작업: {completed_count}/{len(future_to_file)}")
+                        # 남은 작업들을 취소하려 시도 (이미 실행 중인 것은 취소 안됨)
+                        for remaining_future in future_to_file:
+                            if not remaining_future.done():
+                                remaining_future.cancel()
+                        break
+                    
+                    file_name = future_to_file[future]
+                    thumbnail = future.result()
+                    completed_count += 1
+                    
+                    if thumbnail:
+                        self.thumbnail_ready.emit(file_name, thumbnail)
+                        print(f"✅ [{completed_count}/{len(future_to_file)}] {file_name} 완료")
+                    else:
+                        print(f"❌ [{completed_count}/{len(future_to_file)}] {file_name} 실패")
+                        
+                except Exception as e:
+                    file_name = future_to_file[future]
+                    completed_count += 1
+                    print(f"💥 [{completed_count}/{len(future_to_file)}] {file_name} 예외: {e}")
+        
+        elapsed_time = time.time() - start_time
+        if self.stop_requested:
+            print(f"🛑 썸네일 추출 중단됨: {completed_count}개 완료, {elapsed_time:.1f}초 소요")
+        else:
+            print(f"🎯 배치 추출 완료: {len(self.file_list)}개 파일, {elapsed_time:.1f}초 소요")
+            print(f"   ⚡ 평균 속도: {len(self.file_list)/elapsed_time:.1f}개/초")
     
-    def load_hardcoded_thumbnail(self, video_path):
-        """하드코딩된 그리드 이미지 로드"""
+
+
+    def detect_hardware_acceleration(self):
+        """하드웨어 가속 지원 여부 감지"""
+        if not hasattr(self, '_hw_accel'):
+            self._hw_accel = None
+            try:
+                # GPU 가속 지원 확인 (하이브리드 시스템에서는 항상 로컬 처리)
+                result = subprocess.run([self.ffmpeg_path, '-hide_banner', '-encoders'], 
+                                      capture_output=True, text=True, timeout=5)
+                if 'h264_nvenc' in result.stdout:
+                    self._hw_accel = 'nvenc'
+                    print("🚀 NVIDIA GPU 가속 감지!")
+                elif 'h264_qsv' in result.stdout:
+                    self._hw_accel = 'qsv'
+                    print("🚀 Intel QSV 가속 감지!")
+                elif 'h264_amf' in result.stdout:
+                    self._hw_accel = 'amf'
+                    print("🚀 AMD AMF 가속 감지!")
+                else:
+                    print("⚡ CPU 모드 (하드웨어 가속 없음)")
+            except:
+                print("⚡ CPU 모드 (가속 감지 실패)")
+        return self._hw_accel
+
+    def get_thumbnail_cache_path(self, video_path):
+        """썸네일 캐시 경로 생성"""
         try:
-            # 영상 파일명에서 확장자 제거하여 폴더명 추출
-            # 예: \\MYCLOUDEX2ULTRA\Private\capturegem\elimeowy-Chaturbate-2025-05-05T11_37_18+09_00.mp4
-            # -> elimeowy-Chaturbate-2025-05-05T11_37_18+09_00
-            filename_without_ext = os.path.splitext(os.path.basename(video_path))[0]
-            folder_name = filename_without_ext
+            # 현재 폴더의 상위 폴더 경로
+            current_dir = os.path.dirname(video_path)
+            parent_dir = os.path.dirname(current_dir)
             
-            # 메타데이터 그리드 이미지 경로 구성
-            grid_path = os.path.join(METADATA_BASE_PATH, folder_name, GRID_IMAGE_FILENAME)
+            # 영상 제목 (확장자 제외)
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
             
-            if DEBUG_HARDCODED:
-                print(f"하드코딩 썸네일 시도: {grid_path}")
+            # 메타데이터 경로 구성
+            metadata_dir = os.path.join(parent_dir, "metadata", video_name)
+            thumbnail_path = os.path.join(metadata_dir, "image_grid_large.jpg")
             
-            # 파일 존재 확인 및 로드
-            if os.path.exists(grid_path):
-                pixmap = QPixmap(grid_path)
+            return metadata_dir, thumbnail_path
+            
+        except Exception as e:
+            print(f"썸네일 캐시 경로 생성 실패: {e}")
+            return None, None
+
+    def load_cached_thumbnail(self, video_path):
+        """캐시된 썸네일 로드"""
+        try:
+            metadata_dir, thumbnail_path = self.get_thumbnail_cache_path(video_path)
+            
+            if thumbnail_path and os.path.exists(thumbnail_path):
+                print(f"📁 캐시된 썸네일 발견: {os.path.basename(thumbnail_path)}")
+                
+                pixmap = QPixmap(thumbnail_path)
                 if not pixmap.isNull():
                     # 썸네일 크기로 리사이즈
                     scaled_pixmap = pixmap.scaled(
                         self.thumbnail_size[0], self.thumbnail_size[1],
                         Qt.KeepAspectRatio, Qt.SmoothTransformation
                     )
-                    if DEBUG_HARDCODED:
-                        print(f"하드코딩 썸네일 로드 성공: {grid_path}")
+                    print(f"✅ 캐시된 썸네일 로드 성공")
                     return scaled_pixmap
                 else:
-                    if DEBUG_HARDCODED:
-                        print(f"하드코딩 썸네일 파일 손상: {grid_path}")
+                    print(f"❌ 캐시된 썸네일 파일 손상")
             else:
-                if DEBUG_HARDCODED:
-                    print(f"하드코딩 썸네일 파일 없음: {grid_path}")
+                print(f"📂 캐시된 썸네일 없음, 새로 생성 필요")
                     
         except Exception as e:
-            if DEBUG_HARDCODED:
-                print(f"하드코딩 썸네일 로드 실패: {video_path}, 오류: {e}")
+            print(f"캐시된 썸네일 로드 실패: {e}")
         
         return None
 
-    def extract_thumbnail(self, video_path):
-        """비디오 파일에서 3x3 그리드 썸네일 추출 (퍼센트 기반)"""
-        # FFmpeg가 비활성화되었거나 없으면 플레이스홀더 반환
-        if not self.ffmpeg_path or not self.ffprobe_path:
-            if DEBUG_HARDCODED:
-                print(f"FFmpeg 없음, 플레이스홀더 반환: {video_path}")
-            return self.create_placeholder_thumbnail()
+    def save_thumbnail_cache(self, video_path, thumbnail_pixmap):
+        """썸네일을 캐시로 저장"""
+        try:
+            metadata_dir, thumbnail_path = self.get_thumbnail_cache_path(video_path)
+            
+            if not metadata_dir or not thumbnail_path:
+                return False
+            
+            # 메타데이터 폴더 생성
+            os.makedirs(metadata_dir, exist_ok=True)
+            
+            # 썸네일 저장
+            success = thumbnail_pixmap.save(thumbnail_path, "JPEG", 95)  # 95% 품질
+            
+            if success:
+                print(f"💾 썸네일 캐시 저장 완료: {os.path.basename(thumbnail_path)}")
+                return True
+            else:
+                print(f"❌ 썸네일 캐시 저장 실패")
+                return False
+                
+        except Exception as e:
+            print(f"썸네일 캐시 저장 실패: {e}")
+            return False
+
+    def get_smart_frame_timestamps(self, video_path, duration, target_count=20):
+        """스마트 프레임 선택 - 액션 위주 씬 변화 감지"""
+        try:
+            print(f"🎯 스마트 프레임 분석 시작: {os.path.basename(video_path)}")
+            
+            # 네트워크 드라이브 확인 및 타임아웃 조정
+            is_network_path = video_path.startswith('\\\\') or video_path.startswith('//')
+            timeout_duration = 120 if is_network_path else 30  # 네트워크는 2분, 로컬은 30초
+            
+            if is_network_path:
+                print("🌐 네트워크 드라이브 - 분석 타임아웃 연장 (2분)")
+            
+            # 씬 변화 감지를 위한 FFmpeg 명령 (네트워크 최적화)
+            cmd = [
+                self.ffmpeg_path,
+                '-probesize', '50M',  # 네트워크용 프로브 크기 증가
+                '-analyzeduration', '30M',  # 분석 시간 증가
+                '-i', video_path,
+                '-vf', 'select=gt(scene\\,0.25),showinfo',  # 25% 이상 씬 변화
+                '-vsync', 'vfr',
+                '-f', 'null',
+                '-'
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_duration)
+            
+            # showinfo에서 타임스탬프 추출
+            scene_times = []
+            for line in result.stderr.split('\n'):
+                if 'pts_time:' in line:
+                    try:
+                        pts_time = float(line.split('pts_time:')[1].split()[0])
+                        if 0 < pts_time < duration:
+                            scene_times.append(pts_time)
+                    except:
+                        continue
+            
+            if len(scene_times) >= target_count:
+                # 씬 변화가 충분하면 균등하게 선택
+                step = len(scene_times) // target_count
+                selected_times = [scene_times[i * step] for i in range(target_count)]
+                print(f"✅ 씬 변화 기반 {len(selected_times)}개 프레임 선택")
+                return selected_times
+            else:
+                # 씬 변화가 부족하면 하이브리드 방식
+                print(f"⚠️ 씬 변화 부족 ({len(scene_times)}개), 하이브리드 모드")
+                smart_times = scene_times.copy()
+                
+                # 부족한 만큼 균등 분할로 채우기
+                remaining = target_count - len(smart_times)
+                if remaining > 0:
+                    for i in range(remaining):
+                        time_point = duration * (i + 1) / (remaining + 1)
+                        # 기존 씬 변화와 겹치지 않도록
+                        if not any(abs(time_point - t) < 5 for t in smart_times):
+                            smart_times.append(time_point)
+                
+                return sorted(smart_times[:target_count])
+                
+        except Exception as e:
+            print(f"⚠️ 스마트 분석 실패: {e}, 균등 분할 모드로 전환")
+            
+            # 네트워크 드라이브에서는 간단한 균등 분할 사용
+            is_network_path = video_path.startswith('\\\\') or video_path.startswith('//')
+            if is_network_path:
+                print("🌐 네트워크 최적화: 간단 균등 분할 적용")
+                timestamps = []
+                for i in range(target_count):
+                    progress = (i + 1) / (target_count + 1)  # 시작/끝 제외
+                    time_point = duration * progress
+                    timestamps.append(time_point)
+                print(f"📊 네트워크 균등 분할: {len(timestamps)}개 프레임")
+                return timestamps
+            
+        # 실패시 개선된 균등 분할 (액션 위주)
+        # 시작/끝 10% 제외하고 액션이 많은 중간 부분에 집중
+        start_offset = duration * 0.1
+        end_offset = duration * 0.9
+        effective_duration = end_offset - start_offset
         
-        # 하드코딩된 썸네일 우선 시도
-        if USE_HARDCODED_THUMBNAILS:
-            hardcoded_thumbnail = self.load_hardcoded_thumbnail(video_path)
-            if hardcoded_thumbnail:
-                return hardcoded_thumbnail
-            elif DEBUG_HARDCODED:
-                print(f"하드코딩 실패, ffmpeg 방식으로 fallback: {video_path}")
-        
+        timestamps = []
+        for i in range(target_count):
+            # 중간 부분에 더 집중된 분포
+            progress = i / (target_count - 1) if target_count > 1 else 0.5
+            # 시그모이드 함수로 중간에 집중
+            weighted_progress = 1 / (1 + math.exp(-6 * (progress - 0.5)))
+            time_point = start_offset + effective_duration * weighted_progress
+            timestamps.append(time_point)
+            
+        print(f"📊 액션 집중 균등 분할: {len(timestamps)}개 프레임")
+        return timestamps
+
+    def extract_frame_parallel(self, video_path, timestamp, frame_id, hw_accel):
+        """개별 프레임을 병렬로 추출 (하이브리드 시스템 최적화)"""
+        try:
+            # 하드웨어 가속 설정 (하이브리드 시스템에서는 모든 처리가 로컬)
+            hw_params = []
+            if hw_accel:
+                if hw_accel == 'nvenc':
+                    hw_params = ['-hwaccel', 'cuda']
+                elif hw_accel == 'qsv':
+                    hw_params = ['-hwaccel', 'qsv']
+                elif hw_accel == 'amf':
+                    hw_params = ['-hwaccel', 'd3d11va']
+            
+            # 하이브리드 시스템: 모든 파일이 로컬에서 처리됨 (메모리 파이프 방식)
+            cmd = [
+                self.ffmpeg_path,
+                '-hide_banner', '-loglevel', 'error',
+                '-threads', '1',
+                '-probesize', '32M',
+                '-analyzeduration', '10M',
+                *hw_params,
+                '-ss', str(timestamp),
+                '-i', video_path,
+                '-vframes', '1',
+                '-q:v', '3',
+                '-s', '400x220',
+                '-f', 'image2pipe',
+                '-vcodec', 'mjpeg',
+                '-pred', '1',
+                'pipe:1'
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+            
+            if result.returncode == 0 and result.stdout:
+                pixmap = QPixmap()
+                if pixmap.loadFromData(result.stdout):
+                    return (frame_id, pixmap)
+            else:
+                # 실패 원인 디버깅
+                if result.returncode != 0:
+                    print(f"   ❌ FFmpeg 오류 (코드 {result.returncode}): {result.stderr.decode('utf-8', errors='ignore')[:200]}")
+                elif not result.stdout:
+                    print(f"   ❌ 파이프 출력 데이터 없음")
+            
+            return (frame_id, None)
+            
+        except subprocess.TimeoutExpired:
+            print(f"프레임 {frame_id} ({timestamp:.1f}s) 타임아웃 (10초)")
+            return (frame_id, None)
+        except Exception as e:
+            print(f"프레임 {frame_id} ({timestamp:.1f}s) 추출 실패: {e}")
+            return (frame_id, None)
+
+    def get_file_size_mb(self, file_path):
+        """파일 크기를 MB 단위로 반환"""
+        try:
+            size_bytes = os.path.getsize(file_path)
+            size_mb = size_bytes / (1024 * 1024)
+            return size_mb
+        except:
+            return 0
+
+    def copy_to_temp_local(self, video_path):
+        """네트워크 파일을 로컬 임시 폴더로 복사"""
         try:
             import tempfile
-            temp_dir = tempfile.gettempdir()
+            import shutil
             
-            # 먼저 영상 길이 간단히 확인
+            temp_dir = tempfile.gettempdir()
+            file_name = os.path.basename(video_path)
+            temp_path = os.path.join(temp_dir, f"cf_temp_{os.getpid()}_{file_name}")
+            
+            print(f"📋 로컬 임시 복사: {file_name}")
+            start_time = time.time()
+            
+            shutil.copy2(video_path, temp_path)
+            
+            elapsed = time.time() - start_time
+            size_mb = self.get_file_size_mb(temp_path)
+            speed = size_mb / elapsed if elapsed > 0 else 0
+            
+            print(f"✅ 복사 완료: {size_mb:.1f}MB, {elapsed:.1f}초, {speed:.1f}MB/s")
+            return temp_path
+            
+        except Exception as e:
+            print(f"❌ 임시 복사 실패: {e}")
+            return None
+
+    def extract_segments_for_thumbnails(self, video_path, timestamps):
+        """큰 파일에서 타임스탬프 주변 세그먼트들만 추출"""
+        try:
+            import tempfile
+            
+            temp_dir = tempfile.gettempdir()
+            base_name = os.path.splitext(os.path.basename(video_path))[0]
+            segment_paths = []
+            
+            print(f"🔪 부분 추출 모드: {len(timestamps)}개 세그먼트")
+            
+            # 각 타임스탬프별로 3초 세그먼트 추출
+            for i, timestamp in enumerate(timestamps):
+                segment_path = os.path.join(temp_dir, f"cf_seg_{os.getpid()}_{base_name}_{i}.mp4")
+                
+                # 시작 시간 (1초 여유)
+                start_time = max(0, timestamp - 1)
+                
+                cmd = [
+                    self.ffmpeg_path,
+                    '-hide_banner', '-loglevel', 'error',
+                    '-ss', str(start_time),
+                    '-i', video_path,
+                    '-t', '3',  # 3초간
+                    '-c', 'copy',  # 재인코딩 없이 복사 (빠름)
+                    '-avoid_negative_ts', 'make_zero',
+                    '-y',
+                    segment_path
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
+                
+                if result.returncode == 0 and os.path.exists(segment_path):
+                    segment_paths.append((i, segment_path, 1.0))  # (인덱스, 경로, 상대시간)
+                    print(f"✅ 세그먼트 {i+1}/20 추출 완료")
+                else:
+                    print(f"❌ 세그먼트 {i+1}/20 추출 실패")
+                    segment_paths.append((i, None, 1.0))
+            
+            return segment_paths
+            
+        except Exception as e:
+            print(f"❌ 세그먼트 추출 실패: {e}")
+            return []
+
+    def extract_thumbnail(self, video_path):
+        """하이브리드 스마트 썸네일 추출 시스템 🚀"""
+        # 중단 요청 확인
+        if self.stop_requested:
+            print(f"🛑 썸네일 추출 중단: {os.path.basename(video_path)}")
+            return self.create_placeholder_thumbnail()
+            
+        # FFmpeg가 비활성화되었거나 없으면 플레이스홀더 반환
+        if not self.ffmpeg_path or not self.ffprobe_path:
+            return self.create_placeholder_thumbnail()
+        
+        # 캐시된 썸네일 우선 시도
+        cached_thumbnail = self.load_cached_thumbnail(video_path)
+        if cached_thumbnail:
+            return cached_thumbnail
+        
+        try:
+            import math
+            import time
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            # 파일 크기 및 네트워크 드라이브 확인
+            file_size_mb = self.get_file_size_mb(video_path)
+            is_network_path = video_path.startswith('\\\\') or video_path.startswith('//')
+            
+            # 영상 길이 확인
             duration = self.get_simple_duration(video_path)
             if duration <= 0:
                 print(f"영상 길이 확인 실패, 기본값 사용: {video_path}")
-                duration = 1200  # 20분으로 가정 (네트워크 파일은 보통 김)
+                duration = 1200
             
-            # 우선 간단한 프레임들부터 시도 (0%, 25%, 50%, 75% - 4개만)
-            simple_percentages = [0.0, 0.25, 0.5, 0.75]
-            frame_pixmaps = []
+            print(f"🎬 하이브리드 썸네일 추출: {os.path.basename(video_path)}")
+            print(f"   📊 파일 크기: {file_size_mb:.1f}MB, 네트워크: {is_network_path}")
             
-            print(f"네트워크 파일 처리 중: {video_path}")
+            # 하이브리드 전략 결정
+            size_threshold_mb = 500  # 500MB 기준
+            temp_file_path = None
+            segment_paths = []
             
-            # 먼저 간단한 4개 프레임으로 시도
-            for i, percent in enumerate(simple_percentages):
-                time_sec = duration * percent
-                temp_frame = os.path.join(temp_dir, f"simple_frame_{os.getpid()}_{i}.jpg")
+            if is_network_path and file_size_mb > size_threshold_mb:
+                # 큰 네트워크 파일: 부분 추출 방식
+                print(f"🔪 큰 파일 부분 추출 모드 ({file_size_mb:.1f}MB > {size_threshold_mb}MB)")
                 
-                try:
-                    # 최대한 빠른 추출을 위한 명령
-                    cmd = [
-                        self.ffmpeg_path, 
-                        '-ss', str(time_sec),
-                        '-i', video_path,
-                        '-vframes', '1',
-                        '-q:v', '8',  # 최저 품질로 빠르게
-                        '-s', '53x40',
-                        '-f', 'image2',
-                        '-y',
-                        temp_frame
-                    ]
+                # 스마트 프레임 타임스탬프 생성 (단순화)
+                timestamps = []
+                for i in range(20):
+                    progress = (i + 1) / 21  # 5%, 10%, 15%, ..., 95%
+                    time_point = duration * progress
+                    timestamps.append(time_point)
+                
+                # 세그먼트 추출
+                segment_paths = self.extract_segments_for_thumbnails(video_path, timestamps)
+                processing_mode = "segments"
+                
+            elif is_network_path and file_size_mb <= size_threshold_mb:
+                # 작은 네트워크 파일: 전체 임시 복사
+                print(f"📋 작은 파일 임시 복사 모드 ({file_size_mb:.1f}MB ≤ {size_threshold_mb}MB)")
+                temp_file_path = self.copy_to_temp_local(video_path)
+                if temp_file_path:
+                    video_path = temp_file_path  # 로컬 파일로 대체
+                processing_mode = "local_copy"
+                
+            else:
+                # 로컬 파일: 기존 방식
+                print(f"⚡ 로컬 파일 직접 처리 모드")
+                processing_mode = "direct"
+            
+                         # 하드웨어 가속 감지
+            hw_accel = self.detect_hardware_acceleration()
+            
+            if processing_mode == "segments":
+                # 세그먼트별 썸네일 생성
+                frame_pixmaps = []
+                for i, segment_info in enumerate(segment_paths):
+                    frame_id, segment_path, relative_time = segment_info
                     
-                    print(f"프레임 {percent*100:.0f}% 추출 시도...")
-                    
-                    # 네트워크 드라이브용 긴 타임아웃
-                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-                    
-                    if os.path.exists(temp_frame):
-                        pixmap = QPixmap(temp_frame)
-                        if not pixmap.isNull():
+                    if segment_path and os.path.exists(segment_path):
+                        try:
+                            # 세그먼트에서 프레임 추출 (로컬 고속)
+                            pixmap = self.extract_frame_from_segment(segment_path, relative_time, hw_accel)
                             frame_pixmaps.append(pixmap)
-                            print(f"프레임 {percent*100:.0f}% 성공!")
-                        else:
+                        except Exception as e:
+                            print(f"❌ 세그먼트 {i+1} 처리 실패: {e}")
                             frame_pixmaps.append(None)
-                        os.unlink(temp_frame)
+                        finally:
+                            # 세그먼트 파일 정리
+                            try:
+                                os.unlink(segment_path)
+                            except:
+                                pass
                     else:
                         frame_pixmaps.append(None)
-                        
-                except Exception as frame_error:
-                    print(f"프레임 {i} ({percent*100:.0f}%) 추출 실패: {frame_error}")
-                    frame_pixmaps.append(None)
-                    
-                # 하나라도 성공하면 다음으로 진행
-                if any(p is not None for p in frame_pixmaps):
-                    print("기본 프레임 추출 성공, 추가 프레임 시도...")
-            
-            # 기본 4개에 추가로 5개 더 시도 (총 9개가 되도록)
-            if any(p is not None for p in frame_pixmaps):
-                additional_percentages = [0.1, 0.2, 0.6, 0.8, 0.9]
                 
-                for i, percent in enumerate(additional_percentages):
-                    time_sec = duration * percent
-                    temp_frame = os.path.join(temp_dir, f"add_frame_{os.getpid()}_{i}.jpg")
+            else:
+                # 기존 방식 (로컬 또는 임시 복사된 파일)
+                timestamps = self.get_smart_frame_timestamps(video_path, duration, 20)
+                
+                print(f"   📊 해상도: 400x220, 품질: 고품질, 가속: {hw_accel or 'CPU'}")
+                
+                # 병렬 프레임 추출
+                max_workers = 1 if (is_network_path and processing_mode != "local_copy") else 5
+                
+                frame_results = {}
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_frame = {
+                        executor.submit(self.extract_frame_parallel, video_path, ts, i, hw_accel): i
+                        for i, ts in enumerate(timestamps)
+                    }
                     
-                    try:
-                        cmd = [
-                            self.ffmpeg_path, 
-                            '-ss', str(time_sec),
-                            '-i', video_path,
-                            '-vframes', '1',
-                            '-q:v', '8',
-                            '-s', '53x40',
-                            '-f', 'image2',
-                            '-y',
-                            temp_frame
-                        ]
-                        
-                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-                        
-                        if os.path.exists(temp_frame):
-                            pixmap = QPixmap(temp_frame)
-                            if not pixmap.isNull():
-                                # 적절한 위치에 삽입
-                                if percent == 0.1:
-                                    frame_pixmaps.insert(1, pixmap)
-                                elif percent == 0.2:
-                                    frame_pixmaps.insert(2, pixmap)
-                                else:
-                                    frame_pixmaps.append(pixmap)
-                            os.unlink(temp_frame)
-                            
-                    except Exception:
-                        pass  # 추가 프레임은 실패해도 무시
+                    for future in as_completed(future_to_frame, timeout=60):
+                        try:
+                            frame_id, pixmap = future.result()
+                            frame_results[frame_id] = pixmap
+                            if pixmap:
+                                print(f"✅ 프레임 {frame_id+1}/20 완료")
+                            else:
+                                print(f"❌ 프레임 {frame_id+1}/20 실패")
+                        except Exception as e:
+                            frame_id = future_to_frame[future]
+                            print(f"❌ 프레임 {frame_id+1}/20 예외: {e}")
+                            frame_results[frame_id] = None
+                
+                frame_pixmaps = [frame_results.get(i) for i in range(20)]
             
-            # 3x3 격자 썸네일 생성
-            return self.create_3x3_grid_thumbnail(frame_pixmaps)
+            # 임시 파일 정리
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                    print(f"🗑️ 임시 파일 정리 완료")
+                except:
+                    pass
+            
+            # 결과 확인
+            valid_count = sum(1 for p in frame_pixmaps if p is not None)
+            print(f"🎯 추출 완료: {valid_count}/20개 프레임 성공 ({processing_mode} 모드)")
+            
+            # 고품질 5x4 그리드 썸네일 생성
+            generated_thumbnail = self.create_5x4_grid_thumbnail(frame_pixmaps)
+            
+            # 생성된 썸네일을 캐시로 저장
+            if generated_thumbnail and not generated_thumbnail.isNull():
+                self.save_thumbnail_cache(video_path, generated_thumbnail)
+            
+            return generated_thumbnail
                 
         except Exception as e:
-            print(f"3x3 그리드 썸네일 추출 실패: {video_path}, 오류: {e}")
+            print(f"💥 하이브리드 썸네일 추출 실패: {video_path}, 오류: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # 임시 파일 정리 (예외 상황에서도)
+            if 'temp_file_path' in locals() and temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except:
+                    pass
             
         return self.create_placeholder_thumbnail()
+
+    def extract_frame_from_segment(self, segment_path, relative_time, hw_accel):
+        """로컬 세그먼트에서 고속 프레임 추출"""
+        try:
+            # 하드웨어 가속 설정 (로컬 파일이므로 활성화)
+            hw_params = []
+            if hw_accel:
+                if hw_accel == 'nvenc':
+                    hw_params = ['-hwaccel', 'cuda']
+                elif hw_accel == 'qsv':
+                    hw_params = ['-hwaccel', 'qsv']
+                elif hw_accel == 'amf':
+                    hw_params = ['-hwaccel', 'd3d11va']
+            
+            # 로컬 세그먼트에서 메모리 파이프 방식으로 고속 추출
+            cmd = [
+                self.ffmpeg_path,
+                '-hide_banner', '-loglevel', 'error',
+                *hw_params,
+                '-ss', str(relative_time),
+                '-i', segment_path,
+                '-vframes', '1',
+                '-q:v', '3',
+                '-s', '400x220',
+                '-f', 'image2pipe',
+                '-vcodec', 'mjpeg',
+                'pipe:1'
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, timeout=5)
+            
+            if result.returncode == 0 and result.stdout:
+                pixmap = QPixmap()
+                if pixmap.loadFromData(result.stdout):
+                    return pixmap
+                    
+            return None
+            
+        except Exception as e:
+            print(f"세그먼트 프레임 추출 실패: {e}")
+            return None
     
     def get_simple_duration(self, video_path):
         """영상 길이 간단히 확인 (초 단위) - 네트워크 드라이브 최적화"""
@@ -242,13 +671,14 @@ class ThumbnailExtractorThread(QThread):
             
         return 0
     
-    def create_3x3_grid_thumbnail(self, frame_pixmaps):
-        """사용 가능한 프레임들로 3x3 격자 배치 (적응형)"""
+    def create_5x4_grid_thumbnail(self, frame_pixmaps):
+        """사용 가능한 프레임들로 5x4 격자 배치 (적응형)"""
         try:
-            # 3x3 격자 설정
-            grid_size = 3
-            frame_width = self.thumbnail_size[0] // grid_size
-            frame_height = self.thumbnail_size[1] // grid_size
+            # 5x4 격자 설정
+            grid_cols = 5
+            grid_rows = 4
+            frame_width = self.thumbnail_size[0] // grid_cols
+            frame_height = self.thumbnail_size[1] // grid_rows
             
             # 최종 이미지 생성
             final_pixmap = QPixmap(self.thumbnail_size[0], self.thumbnail_size[1])
@@ -262,11 +692,11 @@ class ThumbnailExtractorThread(QThread):
             
             print(f"유효한 프레임 수: {total_valid}/{len(frame_pixmaps)}")
             
-            # 9개 그리드 셀에 배치
+            # 20개 그리드 셀에 배치
             valid_index = 0
-            for i in range(9):  # 3x3 = 9개
-                row = i // grid_size
-                col = i % grid_size
+            for i in range(20):  # 5x4 = 20개
+                row = i // grid_cols
+                col = i % grid_cols
                     
                 x = col * frame_width
                 y = row * frame_height
@@ -319,7 +749,7 @@ class ThumbnailExtractorThread(QThread):
                 return self.create_placeholder_thumbnail()
             
         except Exception as e:
-            print(f"3x3 격자 썸네일 생성 실패: {e}")
+            print(f"5x4 격자 썸네일 생성 실패: {e}")
             return self.create_placeholder_thumbnail()
 
     def create_simple_grid_thumbnail(self, frame_pixmaps):
@@ -515,15 +945,9 @@ class VideoThumbnailWidget(QWidget):
         """더블클릭시 영상 파일 열기"""
         if event.button() == Qt.LeftButton and self.file_path:
             try:
-                if DEBUG_HARDCODED:
-                    print(f"영상 파일 열기 시도: {self.file_path}")
-                
                 # Windows에서 기본 프로그램으로 파일 열기
                 import os
                 os.startfile(self.file_path)
-                
-                if DEBUG_HARDCODED:
-                    print(f"영상 파일 열기 성공: {self.file_name}")
                     
             except Exception as e:
                 print(f"영상 파일 열기 실패: {self.file_name}, 오류: {e}")
@@ -886,15 +1310,19 @@ class VisualSelectionDialog(QDialog):
         self.update_stats()
         
     def start_thumbnail_extraction(self, files):
-        """썸네일 추출 시작"""
+        """백그라운드 썸네일 추출 시작"""
+        # 기존 스레드가 실행 중이면 먼저 중단
         if self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
-            self.thumbnail_extractor.quit()
-            self.thumbnail_extractor.wait()
-            
+            print("🔄 기존 썸네일 추출 작업 중단 후 새 작업 시작...")
+            self.stop_thumbnail_extraction()
+        
+        # 새 스레드 생성 및 시작
         self.thumbnail_extractor = ThumbnailExtractorThread(files)
         self.thumbnail_extractor.set_path(self.current_path)
         self.thumbnail_extractor.thumbnail_ready.connect(self.on_thumbnail_ready)
         self.thumbnail_extractor.start()
+        
+        print(f"🎬 새 썸네일 추출 작업 시작: {len(files)}개 파일")
         
     @pyqtSlot(str, QPixmap)
     def on_thumbnail_ready(self, file_name, thumbnail):
@@ -1031,4 +1459,53 @@ class VisualSelectionDialog(QDialog):
             'username': self.user_combo.currentText()
         }
         
-        return self.selection_result 
+        return self.selection_result
+    
+    def stop_thumbnail_extraction(self):
+        """썸네일 추출 작업 안전하게 중단"""
+        if self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
+            print("🛑 썸네일 추출 스레드 중단 시작...")
+            
+            # 중단 요청
+            self.thumbnail_extractor.request_stop()
+            
+            # 최대 5초 대기 후 강제 종료
+            if not self.thumbnail_extractor.wait(5000):  # 5초 대기
+                print("⚠️ 스레드가 5초 내에 종료되지 않아 강제 종료")
+                self.thumbnail_extractor.terminate()
+                self.thumbnail_extractor.wait(1000)  # 추가 1초 대기
+            else:
+                print("✅ 썸네일 추출 스레드 정상 종료됨")
+    
+    def closeEvent(self, event):
+        """창 닫기 이벤트 처리 - 썸네일 추출 작업 정리"""
+        print("🚪 비주얼 선별 창 닫기 요청됨")
+        
+        # 썸네일 추출 작업이 진행 중이면 중단
+        if self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
+            print("🛑 진행 중인 썸네일 추출 작업을 안전하게 중단합니다...")
+            
+            # 사용자에게 알림
+            from PyQt5.QtWidgets import QMessageBox, QPushButton
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("작업 중단 중...")
+            msg_box.setText("진행 중인 썸네일 추출 작업을 안전하게 중단하고 있습니다.")
+            msg_box.setInformativeText("현재 처리 중인 파일들을 완료한 후 종료됩니다.")
+            msg_box.setStandardButtons(QMessageBox.NoButton)
+            
+            # 강제 종료 버튼 추가
+            force_button = msg_box.addButton("즉시 강제 종료", QMessageBox.DestructiveRole)
+            
+            # 메시지 박스를 모달이 아닌 방식으로 표시
+            msg_box.setModal(False)
+            msg_box.show()
+            
+            # 백그라운드에서 중단 처리
+            self.stop_thumbnail_extraction()
+            
+            # 메시지 박스 닫기
+            msg_box.close()
+        
+        # 부모 클래스의 closeEvent 호출
+        super().closeEvent(event)
+        print("✅ 비주얼 선별 창 완전히 종료됨") 
