@@ -80,16 +80,16 @@ class ThumbnailExtractorThread(QThread):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 모든 썸네일 추출 작업 제출
             future_to_file = {}
-        for file_info in self.file_list:
+            for file_info in self.file_list:
                 # 중단 요청 확인 (작업 제출 단계)
                 if self.stop_requested:
                     print(f"🛑 작업 제출 중 중단 요청됨. 제출된 작업: {len(future_to_file)}개")
                     break
                     
-            file_name = file_info['name']
-            file_path = os.path.join(self.current_path, file_name)
-            
-            if os.path.exists(file_path):
+                file_name = file_info['name'] 
+                file_path = os.path.join(self.current_path, file_name)
+                
+                if os.path.exists(file_path):
                     future = executor.submit(self.extract_thumbnail, file_path)
                     future_to_file[future] = file_name
             
@@ -143,8 +143,8 @@ class ThumbnailExtractorThread(QThread):
                         thumbnail = future.result(timeout=10)  # 개별 결과 10초 타임아웃
                         completed_count += 1
                         
-                if thumbnail:
-                    self.thumbnail_ready.emit(file_name, thumbnail)
+                        if thumbnail:
+                            self.thumbnail_ready.emit(file_name, thumbnail)
                             print(f"✅ [{completed_count}/{len(future_to_file)}] {file_name} 완료")
                         else:
                             print(f"❌ [{completed_count}/{len(future_to_file)}] {file_name} 실패")
@@ -344,11 +344,11 @@ class ThumbnailExtractorThread(QThread):
                 print("🌐 네트워크 드라이브 - 분석 타임아웃 연장 (2분)")
             
             # 씬 변화 감지를 위한 FFmpeg 명령 (네트워크 최적화)
-                    cmd = [
-                        self.ffmpeg_path, 
+            cmd = [
+                self.ffmpeg_path, 
                 '-probesize', '50M',  # 네트워크용 프로브 크기 증가
                 '-analyzeduration', '30M',  # 분석 시간 증가
-                        '-i', video_path,
+                '-i', video_path,
                 '-vf', 'select=gt(scene\\,0.25),showinfo',  # 25% 이상 씬 변화
                 '-vsync', 'vfr',
                 '-f', 'null',
@@ -374,7 +374,7 @@ class ThumbnailExtractorThread(QThread):
                 selected_times = [scene_times[i * step] for i in range(target_count)]
                 print(f"✅ 씬 변화 기반 {len(selected_times)}개 프레임 선택")
                 return selected_times
-                        else:
+            else:
                 # 씬 변화가 부족하면 하이브리드 방식
                 print(f"⚠️ 씬 변화 부족 ({len(scene_times)}개), 하이브리드 모드")
                 smart_times = scene_times.copy()
@@ -437,16 +437,16 @@ class ThumbnailExtractorThread(QThread):
                     hw_params = ['-hwaccel', 'd3d11va']
             
             # 하이브리드 시스템: 모든 파일이 로컬에서 처리됨 (메모리 파이프 방식)
-                        cmd = [
-                            self.ffmpeg_path, 
+            cmd = [
+                self.ffmpeg_path, 
                 '-hide_banner', '-loglevel', 'error',
                 '-threads', '1',
                 '-probesize', '32M',
                 '-analyzeduration', '10M',
                 *hw_params,
                 '-ss', str(timestamp),
-                            '-i', video_path,
-                            '-vframes', '1',
+                '-i', video_path,
+                '-vframes', '1',
                 '-q:v', '3',
                 '-s', '400x220',
                 '-f', 'image2pipe',
@@ -547,7 +547,7 @@ class ThumbnailExtractorThread(QThread):
                 if result.returncode == 0 and os.path.exists(segment_path):
                     segment_paths.append((i, segment_path, 1.0))  # (인덱스, 경로, 상대시간)
                     print(f"✅ 세그먼트 {i+1}/20 추출 완료")
-                                else:
+                else:
                     print(f"❌ 세그먼트 {i+1}/20 추출 실패")
                     segment_paths.append((i, None, 1.0))
             
@@ -628,7 +628,7 @@ class ThumbnailExtractorThread(QThread):
                 print(f"⚡ 로컬 파일 직접 처리 모드")
                 processing_mode = "direct"
             
-                         # 하드웨어 가속 감지
+                        # 하드웨어 가속 감지
             hw_accel = self.detect_hardware_acceleration()
             
             if processing_mode == "segments":
@@ -641,7 +641,7 @@ class ThumbnailExtractorThread(QThread):
                         try:
                             # 세그먼트에서 프레임 추출 (로컬 고속)
                             pixmap = self.extract_frame_from_segment(segment_path, relative_time, hw_accel)
-                                    frame_pixmaps.append(pixmap)
+                            frame_pixmaps.append(pixmap)
                         except Exception as e:
                             print(f"❌ 세그먼트 {i+1} 처리 실패: {e}")
                             frame_pixmaps.append(None)
@@ -690,8 +690,8 @@ class ThumbnailExtractorThread(QThread):
                                     print(f"✅ 프레임 {frame_id+1}/20 완료")
                                 else:
                                     print(f"❌ 프레임 {frame_id+1}/20 실패")
-                
-        except Exception as e:
+                                
+                            except Exception as e:
                                 frame_id = future_to_frame[future]
                                 completed_frames += 1
                                 print(f"❌ 프레임 {frame_id+1}/20 예외: {e}")
@@ -1066,7 +1066,7 @@ class VideoThumbnailWidget(QWidget):
             
             self.thumbnail_pixmap = scaled_pixmap
             self.thumbnail_label.setPixmap(scaled_pixmap)
-        self.thumbnail_label.setText("")
+            self.thumbnail_label.setText("")
         else:
             # 실패시 플레이스홀더
             self.thumbnail_label.setText("❌ 로딩 실패")
@@ -1649,8 +1649,8 @@ class VisualSelectionDialog(QDialog):
             
             # 2. UI 상태 초기화 (안전하게)
             try:
-        self.clear_thumbnails()
-        self.update_stats()
+                self.clear_thumbnails()
+                self.update_stats()
             except Exception as e:
                 print(f"⚠️ UI 초기화 중 오류: {e}")
             
@@ -1798,11 +1798,11 @@ class VisualSelectionDialog(QDialog):
             print(f"🎬 모델 '{current_user}' 썸네일 추출 시작: {len(files)}개 파일")
             
             # 새 스레드 생성 및 시작
-        self.thumbnail_extractor = ThumbnailExtractorThread(files)
-        self.thumbnail_extractor.set_path(self.current_path)
-        self.thumbnail_extractor.thumbnail_ready.connect(self.on_thumbnail_ready)
+            self.thumbnail_extractor = ThumbnailExtractorThread(files)
+            self.thumbnail_extractor.set_path(self.current_path)
+            self.thumbnail_extractor.thumbnail_ready.connect(self.on_thumbnail_ready)
             self.thumbnail_extractor.show_timeout_dialog.connect(self.handle_batch_timeout)
-        self.thumbnail_extractor.start()
+            self.thumbnail_extractor.start()
             
             print(f"✅ 모델 '{current_user}' 로딩 프로세스 활성화됨")
             
@@ -1917,12 +1917,12 @@ class VisualSelectionDialog(QDialog):
             # 위젯 안전 삭제
             for widget in list(self.thumbnail_widgets.values()):
                 try:
-            widget.deleteLater()
+                    widget.deleteLater()
                 except Exception as e:
                     print(f"⚠️ 위젯 삭제 중 오류: {e}")
             
-        self.thumbnail_widgets.clear()
-        self.selected_files.clear()
+            self.thumbnail_widgets.clear()
+            self.selected_files.clear()
             print("🧹 썸네일 위젯 정리 완료")
             
         except Exception as e:
@@ -1935,7 +1935,7 @@ class VisualSelectionDialog(QDialog):
             if hasattr(self, 'thumbnail_extractor') and self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
                 print("🔄 clear_thumbnails에서 잔여 프로세스 정리")
             self.thumbnail_extractor.quit()
-                self.thumbnail_extractor.wait(1000)  # 1초 타임아웃
+            self.thumbnail_extractor.wait(1000)  # 1초 타임아웃
         except Exception as e:
             print(f"⚠️ 잔여 프로세스 정리 중 오류: {e}")
             
@@ -1973,7 +1973,7 @@ class VisualSelectionDialog(QDialog):
 🎬 상태: 고해상도 캐시 적용
                 """.strip()
                 
-            self.preview_info_label.setText(info_text)
+                self.preview_info_label.setText(info_text)
                 print(f"🔍 고해상도 미리보기 표시: {file_name}")
                 
             elif widget.thumbnail_pixmap and not widget.thumbnail_pixmap.isNull():
