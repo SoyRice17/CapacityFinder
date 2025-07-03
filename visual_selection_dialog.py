@@ -11,6 +11,9 @@ from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread, pyqtSlot, QSize
 from PyQt5.QtGui import QFont, QColor, QPixmap, QPainter, QPen, QBrush
 import subprocess
 
+# FFmpeg 관리자 import
+from ffmpeg_manager import FFmpegManager
+
 # 로컬 하드코딩 설정 import (선택적)
 try:
     from config_local import USE_HARDCODED_THUMBNAILS, METADATA_BASE_PATH, GRID_IMAGE_FILENAME, DEBUG_HARDCODED
@@ -27,6 +30,15 @@ class ThumbnailExtractorThread(QThread):
         self.file_list = file_list
         self.thumbnail_size = thumbnail_size
         self.current_path = ""
+        
+        # FFmpeg 매니저 초기화
+        self.ffmpeg_manager = FFmpegManager()
+        self.ffmpeg_path, self.ffprobe_path = self.ffmpeg_manager.get_ffmpeg_paths()
+        
+        if DEBUG_HARDCODED:
+            print(f"FFmpeg 경로: {self.ffmpeg_path}")
+            print(f"FFprobe 경로: {self.ffprobe_path}")
+            print(f"FFmpeg 비활성화: {self.ffmpeg_manager.is_ffmpeg_disabled()}")
         
     def set_path(self, path):
         self.current_path = path
@@ -84,6 +96,12 @@ class ThumbnailExtractorThread(QThread):
 
     def extract_thumbnail(self, video_path):
         """비디오 파일에서 3x3 그리드 썸네일 추출 (퍼센트 기반)"""
+        # FFmpeg가 비활성화되었거나 없으면 플레이스홀더 반환
+        if not self.ffmpeg_path or not self.ffprobe_path:
+            if DEBUG_HARDCODED:
+                print(f"FFmpeg 없음, 플레이스홀더 반환: {video_path}")
+            return self.create_placeholder_thumbnail()
+        
         # 하드코딩된 썸네일 우선 시도
         if USE_HARDCODED_THUMBNAILS:
             hardcoded_thumbnail = self.load_hardcoded_thumbnail(video_path)
@@ -116,7 +134,7 @@ class ThumbnailExtractorThread(QThread):
                 try:
                     # 최대한 빠른 추출을 위한 명령
                     cmd = [
-                        'ffmpeg', 
+                        self.ffmpeg_path, 
                         '-ss', str(time_sec),
                         '-i', video_path,
                         '-vframes', '1',
@@ -161,7 +179,7 @@ class ThumbnailExtractorThread(QThread):
                     
                     try:
                         cmd = [
-                            'ffmpeg', 
+                            self.ffmpeg_path, 
                             '-ss', str(time_sec),
                             '-i', video_path,
                             '-vframes', '1',
@@ -201,7 +219,7 @@ class ThumbnailExtractorThread(QThread):
         """영상 길이 간단히 확인 (초 단위) - 네트워크 드라이브 최적화"""
         try:
             cmd = [
-                'ffprobe', '-v', 'quiet', 
+                self.ffprobe_path, '-v', 'quiet', 
                 '-print_format', 'compact',
                 '-show_entries', 'format=duration',
                 video_path
@@ -527,13 +545,69 @@ class VisualSelectionDialog(QDialog):
         self.selected_files = set()
         self.thumbnail_extractor = None
         
+        # FFmpeg 매니저 초기화
+        self.ffmpeg_manager = FFmpegManager()
+        
         self.setWindowTitle("비주얼 영상 선별 도우미")
         self.setGeometry(100, 100, 1200, 800)
         self.setModal(True)
         
+        # FFmpeg 체크를 지연시켜서 UI가 먼저 표시되도록
+        QTimer.singleShot(100, self.check_ffmpeg_on_startup)
+        
         self.init_ui()
         self.load_users()
         
+    def check_ffmpeg_on_startup(self):
+        """시작시 FFmpeg 체크 및 필요시 다운로드 프롬프트"""
+        if self.ffmpeg_manager.needs_installation():
+            self.ffmpeg_manager.check_and_prompt_if_needed(self)
+            # FFmpeg 상태가 변경되었을 수 있으므로 UI 업데이트
+            self.update_ffmpeg_status()
+    
+    def update_ffmpeg_status(self):
+        """FFmpeg 상태 UI 업데이트"""
+        if hasattr(self, 'ffmpeg_status_label'):
+            if self.ffmpeg_manager.is_ffmpeg_disabled():
+                self.ffmpeg_status_label.setText("🚫 FFmpeg 비활성화")
+                self.ffmpeg_status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+            else:
+                ffmpeg_path, ffprobe_path = self.ffmpeg_manager.get_ffmpeg_paths()
+                if ffmpeg_path and ffprobe_path:
+                    self.ffmpeg_status_label.setText("✅ FFmpeg 사용 가능")
+                    self.ffmpeg_status_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+                else:
+                    self.ffmpeg_status_label.setText("❌ FFmpeg 없음")
+                    self.ffmpeg_status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        
+        # 로드 버튼 상태 업데이트
+        if hasattr(self, 'load_button'):
+            has_users = self.user_combo.count() > 0 and self.user_combo.currentText() != "사용 가능한 사용자 없음"
+            self.load_button.setEnabled(has_users)
+        
+        # 재설치 버튼 표시/숨김
+        if hasattr(self, 'reinstall_ffmpeg_btn'):
+            # FFmpeg가 비활성화되었거나 없을 때만 재설치 버튼 표시
+            show_button = (self.ffmpeg_manager.is_ffmpeg_disabled() or 
+                          not all(self.ffmpeg_manager.get_ffmpeg_paths()))
+            self.reinstall_ffmpeg_btn.setVisible(show_button)
+    
+    def reinstall_ffmpeg(self):
+        """FFmpeg 재설치"""
+        # 비활성화 상태라면 먼저 활성화
+        if self.ffmpeg_manager.is_ffmpeg_disabled():
+            self.ffmpeg_manager.enable_ffmpeg()
+        
+        # 다운로드 시도
+        success = self.ffmpeg_manager.download_ffmpeg(self)
+        
+        # 상태 업데이트
+        self.update_ffmpeg_status()
+        
+        if success:
+            QMessageBox.information(self, "재설치 완료", 
+                                  "FFmpeg가 성공적으로 재설치되었습니다!\n비주얼 선별 기능을 사용할 수 있습니다.")
+    
     def init_ui(self):
         """UI 초기화"""
         layout = QVBoxLayout(self)
@@ -607,7 +681,24 @@ class VisualSelectionDialog(QDialog):
         self.clear_all_btn.setMaximumHeight(25)
         layout.addWidget(self.clear_all_btn)
         
+        # FFmpeg 상태 표시
+        layout.addWidget(QLabel("|"))
+        self.ffmpeg_status_label = QLabel("FFmpeg 확인 중...")
+        self.ffmpeg_status_label.setMaximumHeight(25)
+        layout.addWidget(self.ffmpeg_status_label)
+        
+        # FFmpeg 재설치 버튼
+        self.reinstall_ffmpeg_btn = QPushButton("🔄 FFmpeg 재설치")
+        self.reinstall_ffmpeg_btn.clicked.connect(self.reinstall_ffmpeg)
+        self.reinstall_ffmpeg_btn.setMaximumHeight(25)
+        self.reinstall_ffmpeg_btn.setVisible(False)  # 기본적으로 숨김
+        layout.addWidget(self.reinstall_ffmpeg_btn)
+        
         layout.addStretch()
+        
+        # 초기 FFmpeg 상태 업데이트
+        QTimer.singleShot(200, self.update_ffmpeg_status)
+        
         return panel
         
     def create_thumbnail_area(self):

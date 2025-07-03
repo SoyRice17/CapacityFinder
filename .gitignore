@@ -3,3 +3,5 @@ __pycache__/
 path_history.json
 config_local.py
 user_ratings.json
+ffmpeg_config.json
+ffmpeg_bundle/
