@@ -46,6 +46,13 @@ class ThumbnailExtractorThread(QThread):
         import time
         
         print(f"🎬 배치 썸네일 추출 시작: {len(self.file_list)}개 파일")
+        
+        # 디버깅: 파일 순서 확인
+        for i, file_info in enumerate(self.file_list[:3]):  # 처음 3개만 출력
+            print(f"🔍 파일 순서 [{i+1}]: {file_info['name']}")
+        if len(self.file_list) > 3:
+            print(f"🔍 ... 총 {len(self.file_list)}개 파일")
+        
         start_time = time.time()
         
         # 중단 요청 확인
@@ -171,8 +178,13 @@ class ThumbnailExtractorThread(QThread):
         try:
             metadata_dir, thumbnail_path = self.get_thumbnail_cache_path(video_path)
             
+            # 디버깅: 캐시 경로 상세 출력
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
+            print(f"🔍 캐시 검색 - 파일: {video_name}")
+            print(f"🔍 캐시 경로: {thumbnail_path}")
+            
             if thumbnail_path and os.path.exists(thumbnail_path):
-                print(f"📁 캐시된 썸네일 발견: {os.path.basename(thumbnail_path)}")
+                print(f"📁 캐시된 썸네일 발견: {thumbnail_path}")
                 
                 pixmap = QPixmap(thumbnail_path)
                 if not pixmap.isNull():
@@ -181,15 +193,16 @@ class ThumbnailExtractorThread(QThread):
                         self.thumbnail_size[0], self.thumbnail_size[1],
                         Qt.KeepAspectRatio, Qt.SmoothTransformation
                     )
-                    print(f"✅ 캐시된 썸네일 로드 성공")
+                    print(f"✅ 캐시된 썸네일 로드 성공: {video_name}")
                     return scaled_pixmap
                 else:
-                    print(f"❌ 캐시된 썸네일 파일 손상")
+                    print(f"❌ 캐시된 썸네일 파일 손상: {video_name}")
             else:
-                print(f"📂 캐시된 썸네일 없음, 새로 생성 필요")
+                print(f"📂 캐시된 썸네일 없음, 새로 생성 필요: {video_name}")
+                print(f"📂 찾으려던 경로: {thumbnail_path}")
                     
         except Exception as e:
-            print(f"캐시된 썸네일 로드 실패: {e}")
+            print(f"캐시된 썸네일 로드 실패: {video_path}, 오류: {e}")
         
         return None
 
@@ -198,24 +211,32 @@ class ThumbnailExtractorThread(QThread):
         try:
             metadata_dir, thumbnail_path = self.get_thumbnail_cache_path(video_path)
             
+            # 디버깅: 캐시 저장 경로 상세 출력
+            video_name = os.path.splitext(os.path.basename(video_path))[0]
+            print(f"🔍 캐시 저장 - 파일: {video_name}")
+            print(f"🔍 저장 경로: {thumbnail_path}")
+            
             if not metadata_dir or not thumbnail_path:
+                print(f"❌ 캐시 경로 생성 실패: {video_name}")
                 return False
             
             # 메타데이터 폴더 생성
             os.makedirs(metadata_dir, exist_ok=True)
+            print(f"📁 캐시 폴더 생성: {metadata_dir}")
             
             # 썸네일 저장
             success = thumbnail_pixmap.save(thumbnail_path, "JPEG", 95)  # 95% 품질
             
             if success:
-                print(f"💾 썸네일 캐시 저장 완료: {os.path.basename(thumbnail_path)}")
+                print(f"💾 썸네일 캐시 저장 완료: {thumbnail_path}")
+                print(f"💾 파일 존재 확인: {os.path.exists(thumbnail_path)}")
                 return True
             else:
-                print(f"❌ 썸네일 캐시 저장 실패")
+                print(f"❌ 썸네일 캐시 저장 실패: {video_name}")
                 return False
                 
         except Exception as e:
-            print(f"썸네일 캐시 저장 실패: {e}")
+            print(f"썸네일 캐시 저장 실패: {video_path}, 오류: {e}")
             return False
 
     def get_smart_frame_timestamps(self, video_path, duration, target_count=20):
@@ -455,8 +476,11 @@ class ThumbnailExtractorThread(QThread):
         if not self.ffmpeg_path or not self.ffprobe_path:
             return self.create_placeholder_thumbnail()
         
+        # 원본 파일 경로 백업 (캐시 저장용)
+        original_video_path = video_path
+        
         # 캐시된 썸네일 우선 시도
-        cached_thumbnail = self.load_cached_thumbnail(video_path)
+        cached_thumbnail = self.load_cached_thumbnail(original_video_path)
         if cached_thumbnail:
             return cached_thumbnail
         
@@ -475,13 +499,14 @@ class ThumbnailExtractorThread(QThread):
                 print(f"영상 길이 확인 실패, 기본값 사용: {video_path}")
                 duration = 1200
             
-            print(f"🎬 하이브리드 썸네일 추출: {os.path.basename(video_path)}")
+            print(f"🎬 하이브리드 썸네일 추출: {os.path.basename(original_video_path)}")
             print(f"   📊 파일 크기: {file_size_mb:.1f}MB, 네트워크: {is_network_path}")
             
             # 하이브리드 전략 결정
             size_threshold_mb = 500  # 500MB 기준
             temp_file_path = None
             segment_paths = []
+            processing_path = video_path  # 실제 처리에 사용할 경로
             
             if is_network_path and file_size_mb > size_threshold_mb:
                 # 큰 네트워크 파일: 부분 추출 방식
@@ -494,7 +519,7 @@ class ThumbnailExtractorThread(QThread):
                     time_point = duration * progress
                     timestamps.append(time_point)
                 
-                # 세그먼트 추출
+                # 세그먼트 추출 (원본 경로 사용)
                 segment_paths = self.extract_segments_for_thumbnails(video_path, timestamps)
                 processing_mode = "segments"
                 
@@ -503,7 +528,7 @@ class ThumbnailExtractorThread(QThread):
                 print(f"📋 작은 파일 임시 복사 모드 ({file_size_mb:.1f}MB ≤ {size_threshold_mb}MB)")
                 temp_file_path = self.copy_to_temp_local(video_path)
                 if temp_file_path:
-                    video_path = temp_file_path  # 로컬 파일로 대체
+                    processing_path = temp_file_path  # 처리용 경로만 변경
                 processing_mode = "local_copy"
                 
             else:
@@ -539,7 +564,7 @@ class ThumbnailExtractorThread(QThread):
                 
             else:
                 # 기존 방식 (로컬 또는 임시 복사된 파일)
-                timestamps = self.get_smart_frame_timestamps(video_path, duration, 20)
+                timestamps = self.get_smart_frame_timestamps(processing_path, duration, 20)
                 
                 print(f"   📊 해상도: 400x220, 품질: 고품질, 가속: {hw_accel or 'CPU'}")
                 
@@ -549,7 +574,7 @@ class ThumbnailExtractorThread(QThread):
                 frame_results = {}
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_frame = {
-                        executor.submit(self.extract_frame_parallel, video_path, ts, i, hw_accel): i
+                        executor.submit(self.extract_frame_parallel, processing_path, ts, i, hw_accel): i
                         for i, ts in enumerate(timestamps)
                     }
                     
@@ -583,14 +608,15 @@ class ThumbnailExtractorThread(QThread):
             # 고품질 5x4 그리드 썸네일 생성
             generated_thumbnail = self.create_5x4_grid_thumbnail(frame_pixmaps)
             
-            # 생성된 썸네일을 캐시로 저장
+            # 생성된 썸네일을 캐시로 저장 (원본 경로 사용!)
             if generated_thumbnail and not generated_thumbnail.isNull():
-                self.save_thumbnail_cache(video_path, generated_thumbnail)
+                self.save_thumbnail_cache(original_video_path, generated_thumbnail)
+                print(f"💾 썸네일 캐시 저장: {os.path.basename(original_video_path)}")
             
             return generated_thumbnail
                 
         except Exception as e:
-            print(f"💥 하이브리드 썸네일 추출 실패: {video_path}, 오류: {e}")
+            print(f"💥 하이브리드 썸네일 추출 실패: {original_video_path}, 오류: {e}")
             import traceback
             traceback.print_exc()
             
@@ -598,6 +624,7 @@ class ThumbnailExtractorThread(QThread):
             if 'temp_file_path' in locals() and temp_file_path and os.path.exists(temp_file_path):
                 try:
                     os.unlink(temp_file_path)
+                    print(f"🗑️ 예외 상황 임시 파일 정리 완료")
                 except:
                     pass
             
@@ -825,7 +852,7 @@ class ThumbnailExtractorThread(QThread):
         return pixmap
 
 class VideoThumbnailWidget(QWidget):
-    """개별 비디오 썸네일 위젯"""
+    """개별 비디오 썸네일 위젯 - 고해상도 최적화"""
     selection_changed = pyqtSignal(str, bool)  # 파일명, 선택상태
     preview_requested = pyqtSignal(str)  # 미리보기 요청
     
@@ -838,62 +865,95 @@ class VideoThumbnailWidget(QWidget):
         self.file_path = file_path  # 전체 파일 경로
         self.is_selected = False
         self.thumbnail_pixmap = None
+        self.original_thumbnail = None  # 원본 크기 썸네일 보관
         self.hover_timer = QTimer()
         self.hover_timer.setSingleShot(True)
         self.hover_timer.timeout.connect(self.request_preview)
         
-        self.setFixedSize(180, 160)
+        # 확대된 크기로 설정 (기존 180x160 → 320x280)
+        self.setFixedSize(320, 280)
         self.setup_ui()
         self.update_style()
         
     def setup_ui(self):
-        """UI 설정"""
+        """UI 설정 - 고해상도 최적화"""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        layout.setSpacing(2)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
         
-        # 썸네일 영역
+        # 썸네일 영역 - 대폭 확대 (160x120 → 300x220)
         self.thumbnail_label = QLabel()
-        self.thumbnail_label.setFixedSize(160, 120)
-        self.thumbnail_label.setStyleSheet("border: 1px solid #ccc; background-color: #f0f0f0;")
+        self.thumbnail_label.setFixedSize(300, 220)
+        self.thumbnail_label.setStyleSheet("""
+            QLabel {
+                border: 2px solid #ddd; 
+                background-color: #f8f8f8;
+                border-radius: 8px;
+            }
+        """)
         self.thumbnail_label.setAlignment(Qt.AlignCenter)
-        self.thumbnail_label.setText("로딩중...")
+        self.thumbnail_label.setText("🎬 로딩중...")
+        self.thumbnail_label.setScaledContents(False)  # 비율 유지
         layout.addWidget(self.thumbnail_label)
         
         # 메타데이터 오버레이
         info_layout = QHBoxLayout()
         info_layout.setContentsMargins(0, 0, 0, 0)
         
-        # 체크박스
+        # 체크박스 - 더 크게
         self.checkbox = QCheckBox()
+        self.checkbox.setStyleSheet("QCheckBox::indicator { width: 16px; height: 16px; }")
         self.checkbox.stateChanged.connect(self.on_selection_changed)
         info_layout.addWidget(self.checkbox)
         
-        # 파일 정보
+        # 파일 정보 - 폰트 크기 증가
         info_text = f"{self.formatted_size}"
         self.info_label = QLabel(info_text)
-        self.info_label.setStyleSheet("font-size: 10px; color: #666;")
+        self.info_label.setStyleSheet("font-size: 12px; color: #555; font-weight: bold;")
         info_layout.addWidget(self.info_label)
         
         info_layout.addStretch()
         layout.addLayout(info_layout)
         
-        # 파일명 (짧게 표시)
+        # 파일명 - 더 긴 이름 표시 가능
         display_name = self.file_name
-        if len(display_name) > 20:
-            display_name = display_name[:17] + "..."
+        if len(display_name) > 35:  # 기존 20 → 35자로 증가
+            display_name = display_name[:32] + "..."
         
         self.name_label = QLabel(display_name)
-        self.name_label.setStyleSheet("font-size: 9px; font-weight: bold;")
+        self.name_label.setStyleSheet("""
+            QLabel {
+                font-size: 11px; 
+                font-weight: bold; 
+                color: #333;
+                background-color: rgba(255, 255, 255, 0.9);
+                padding: 2px 4px;
+                border-radius: 3px;
+            }
+        """)
         self.name_label.setToolTip(self.file_name)  # 전체 이름은 툴팁으로
+        self.name_label.setWordWrap(True)  # 줄바꿈 허용
         layout.addWidget(self.name_label)
         
     def set_thumbnail(self, pixmap):
-        """썸네일 설정"""
-        self.thumbnail_pixmap = pixmap
-        self.thumbnail_label.setPixmap(pixmap)
-        self.thumbnail_label.setText("")
-        
+        """썸네일 설정 - 고해상도 최적화"""
+        if pixmap and not pixmap.isNull():
+            self.original_thumbnail = pixmap  # 원본 보관
+            
+            # 썸네일 레이블 크기에 맞게 스케일링 (비율 유지)
+            scaled_pixmap = pixmap.scaled(
+                300, 220,  # 대상 크기
+                Qt.KeepAspectRatio,  # 비율 유지
+                Qt.SmoothTransformation  # 부드러운 변환
+            )
+            
+            self.thumbnail_pixmap = scaled_pixmap
+            self.thumbnail_label.setPixmap(scaled_pixmap)
+            self.thumbnail_label.setText("")
+        else:
+            # 실패시 플레이스홀더
+            self.thumbnail_label.setText("❌ 로딩 실패")
+            
     def on_selection_changed(self, state):
         """선택 상태 변경"""
         self.is_selected = (state == Qt.Checked)
@@ -901,40 +961,75 @@ class VideoThumbnailWidget(QWidget):
         self.selection_changed.emit(self.file_name, self.is_selected)
         
     def update_style(self):
-        """선택 상태에 따른 스타일 업데이트"""
+        """선택 상태에 따른 스타일 업데이트 - 모던 디자인"""
         if self.is_selected:
             self.setStyleSheet("""
                 VideoThumbnailWidget {
                     background-color: #e3f2fd;
-                    border: 2px solid #2196f3;
-                    border-radius: 5px;
+                    border: 3px solid #2196f3;
+                    border-radius: 12px;
                 }
             """)
         else:
             self.setStyleSheet("""
                 VideoThumbnailWidget {
-                    background-color: white;
-                    border: 1px solid #ddd;
-                    border-radius: 5px;
+                    background-color: #ffffff;
+                    border: 2px solid #e0e0e0;
+                    border-radius: 12px;
                 }
                 VideoThumbnailWidget:hover {
-                    background-color: #f5f5f5;
-                    border: 1px solid #999;
+                    background-color: #f0f8ff;
+                    border: 3px solid #4a90e2;
                 }
             """)
     
     def enterEvent(self, event):
-        """마우스 진입시 미리보기 타이머 시작"""
+        """마우스 진입시 - 즉시 확대 미리보기 시작"""
         super().enterEvent(event)
-        self.hover_timer.start(1000)  # 1초 후 미리보기
+        self.show_enlarged_preview()
+        self.hover_timer.start(500)  # 0.5초 후 상세 미리보기
         
     def leaveEvent(self, event):
-        """마우스 떠날시 타이머 취소"""
+        """마우스 떠날시 - 확대 미리보기 숨김"""
         super().leaveEvent(event)
+        self.hide_enlarged_preview()
         self.hover_timer.stop()
         
+    def show_enlarged_preview(self):
+        """마우스 호버시 확대된 원본 이미지 표시"""
+        if not self.original_thumbnail or self.original_thumbnail.isNull():
+            return
+            
+        # 글로벌 위치 계산
+        global_pos = self.mapToGlobal(self.rect().topRight())
+        
+        # 확대 미리보기 창 생성
+        if not hasattr(self, 'preview_window'):
+            self.preview_window = EnlargedPreviewWindow()
+            
+        # 원본 크기로 표시 (최대 800x600으로 제한)
+        max_width, max_height = 800, 600
+        original_size = self.original_thumbnail.size()
+        
+        if original_size.width() > max_width or original_size.height() > max_height:
+            scaled_preview = self.original_thumbnail.scaled(
+                max_width, max_height,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+        else:
+            scaled_preview = self.original_thumbnail
+            
+        # 미리보기 창 표시
+        self.preview_window.show_preview(scaled_preview, global_pos, self.file_name)
+    
+    def hide_enlarged_preview(self):
+        """확대 미리보기 숨김"""
+        if hasattr(self, 'preview_window'):
+            self.preview_window.hide()
+        
     def request_preview(self):
-        """미리보기 요청"""
+        """상세 미리보기 요청 (기존 기능 유지)"""
         self.preview_requested.emit(self.file_name)
         
     def set_selected(self, selected):
@@ -948,6 +1043,7 @@ class VideoThumbnailWidget(QWidget):
                 # Windows에서 기본 프로그램으로 파일 열기
                 import os
                 os.startfile(self.file_path)
+                print(f"📂 영상 파일 열기: {self.file_name}")
                     
             except Exception as e:
                 print(f"영상 파일 열기 실패: {self.file_name}, 오류: {e}")
@@ -957,6 +1053,66 @@ class VideoThumbnailWidget(QWidget):
                                   f"영상 파일을 열 수 없습니다.\n\n파일: {self.file_name}\n오류: {str(e)}")
         
         super().mouseDoubleClickEvent(event)
+
+
+class EnlargedPreviewWindow(QWidget):
+    """확대된 썸네일 미리보기 창"""
+    
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: rgba(0, 0, 0, 0.9);
+                border-radius: 10px;
+            }
+            QLabel {
+                color: white;
+                font-size: 12px;
+                font-weight: bold;
+                background-color: transparent;
+            }
+        """)
+        
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(10, 10, 10, 10)
+        
+        # 이미지 레이블
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.image_label)
+        
+        # 파일명 레이블
+        self.name_label = QLabel()
+        self.name_label.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.name_label)
+        
+    def show_preview(self, pixmap, position, filename):
+        """미리보기 표시"""
+        self.image_label.setPixmap(pixmap)
+        self.name_label.setText(filename)
+        
+        # 창 크기 조정
+        self.adjustSize()
+        
+        # 위치 조정 (화면 경계 고려)
+        screen_geometry = QApplication.desktop().screenGeometry()
+        x = position.x() + 20
+        y = position.y()
+        
+        # 화면 오른쪽 경계 체크
+        if x + self.width() > screen_geometry.width():
+            x = position.x() - self.width() - 20
+            
+        # 화면 아래쪽 경계 체크
+        if y + self.height() > screen_geometry.height():
+            y = screen_geometry.height() - self.height() - 20
+            
+        self.move(x, y)
+        self.show()
+        self.raise_()
+
 
 class VisualSelectionDialog(QDialog):
     def __init__(self, capacity_finder, current_path, parent=None):
@@ -972,8 +1128,9 @@ class VisualSelectionDialog(QDialog):
         # FFmpeg 매니저 초기화
         self.ffmpeg_manager = FFmpegManager()
         
-        self.setWindowTitle("비주얼 영상 선별 도우미")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setWindowTitle("비주얼 영상 선별 도우미 - 고해상도 모드")
+        # 창 크기 대폭 증가 (1200x800 → 1600x1000)
+        self.setGeometry(50, 50, 1600, 1000)
         self.setModal(True)
         
         # FFmpeg 체크를 지연시켜서 UI가 먼저 표시되도록
@@ -1126,51 +1283,125 @@ class VisualSelectionDialog(QDialog):
         return panel
         
     def create_thumbnail_area(self):
-        """썸네일 그리드 영역 생성"""
-        # 스크롤 영역
+        """썸네일 그리드 영역 생성 - 고해상도 최적화"""
+        # 스크롤 영역 - 성능 최적화
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         
-        # 썸네일 컨테이너
+        # 스크롤 성능 최적화
+        scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background-color: #fafafa;
+            }
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f0f0;
+                width: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0c0c0;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #a0a0a0;
+            }
+        """)
+        
+        # 썸네일 컨테이너 - 더 큰 스페이싱
         self.thumbnail_container = QWidget()
         self.thumbnail_layout = QGridLayout(self.thumbnail_container)
-        self.thumbnail_layout.setSpacing(10)
+        self.thumbnail_layout.setSpacing(15)  # 기존 10 → 15로 증가
+        self.thumbnail_layout.setContentsMargins(20, 20, 20, 20)  # 여백 증가
+        
+        # 컨테이너 스타일
+        self.thumbnail_container.setStyleSheet("""
+            QWidget {
+                background-color: #fafafa;
+            }
+        """)
         
         scroll_area.setWidget(self.thumbnail_container)
         return scroll_area
         
     def create_dashboard(self):
-        """실시간 대시보드 생성"""
+        """실시간 대시보드 생성 - 고해상도 최적화"""
         dashboard = QGroupBox("실시간 통계")
         layout = QVBoxLayout(dashboard)
         
-        # 진행률
+        # 진행률 표시 개선
         self.progress_label = QLabel("진행률: 0/0 (0%)")
+        self.progress_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #333;")
         layout.addWidget(self.progress_label)
         
         self.progress_bar = QProgressBar()
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid #ddd;
+                border-radius: 8px;
+                text-align: center;
+                font-weight: bold;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                border-radius: 6px;
+            }
+        """)
         layout.addWidget(self.progress_bar)
         
-        # 통계 정보
+        # 통계 정보 - 더 큰 크기
         self.stats_text = QTextEdit()
-        self.stats_text.setMaximumHeight(200)
+        self.stats_text.setMaximumHeight(250)  # 기존 200 → 250
         self.stats_text.setReadOnly(True)
+        self.stats_text.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                background-color: #ffffff;
+                font-size: 11px;
+                padding: 8px;
+            }
+        """)
         layout.addWidget(self.stats_text)
         
-        # 미리보기 영역
-        preview_group = QGroupBox("빠른 미리보기")
+        # 미리보기 영역 - 고해상도 대응
+        preview_group = QGroupBox("고해상도 미리보기")
         preview_layout = QVBoxLayout(preview_group)
         
-        self.preview_label = QLabel("파일 위에 마우스를 올려보세요")
-        self.preview_label.setFixedSize(240, 180)
-        self.preview_label.setStyleSheet("border: 1px solid #ccc; background-color: #f9f9f9;")
+        # 미리보기 크기 증가 (240x180 → 360x270)
+        self.preview_label = QLabel("파일 위에 마우스를 올려보세요\n🖱️ 호버: 즉시 확대\n⏱️ 0.5초 대기: 상세 정보")
+        self.preview_label.setFixedSize(360, 270)
+        self.preview_label.setStyleSheet("""
+            QLabel {
+                border: 2px solid #ddd; 
+                background-color: #f9f9f9;
+                border-radius: 8px;
+                color: #666;
+                font-size: 11px;
+                padding: 10px;
+            }
+        """)
         self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setWordWrap(True)
         preview_layout.addWidget(self.preview_label)
         
+        # 미리보기 정보 개선
         self.preview_info_label = QLabel("")
-        self.preview_info_label.setStyleSheet("font-size: 11px; color: #666;")
+        self.preview_info_label.setStyleSheet("""
+            QLabel {
+                font-size: 10px; 
+                color: #555; 
+                background-color: rgba(255, 255, 255, 0.8);
+                padding: 4px;
+                border-radius: 4px;
+            }
+        """)
+        self.preview_info_label.setWordWrap(True)
         preview_layout.addWidget(self.preview_info_label)
         
         layout.addWidget(preview_group)
@@ -1205,7 +1436,7 @@ class VisualSelectionDialog(QDialog):
         """)
         
         cancel_button = QPushButton("취소")
-        cancel_button.clicked.connect(self.reject)
+        cancel_button.clicked.connect(self.safe_cancel)  # 우아한 종료 시스템 적용
         cancel_button.setStyleSheet("""
             QPushButton {
                 background-color: #95a5a6;
@@ -1276,11 +1507,13 @@ class VisualSelectionDialog(QDialog):
         self.create_thumbnails(filtered_files)
         
     def create_thumbnails(self, files):
-        """썸네일 위젯들 생성"""
+        """썸네일 위젯들 생성 - 고해상도 최적화"""
         self.clear_thumbnails()
         
         if not files:
             return
+            
+        print(f"🎨 고해상도 썸네일 위젯 생성: {len(files)}개")
             
         # 썸네일 위젯 생성
         for i, file_info in enumerate(files):
@@ -1292,9 +1525,9 @@ class VisualSelectionDialog(QDialog):
             widget.selection_changed.connect(self.on_selection_changed)
             widget.preview_requested.connect(self.show_preview)
             
-            # 그리드에 배치 (5열)
-            row = i // 5
-            col = i % 5
+            # 그리드에 배치 (5열 → 4열로 변경, 더 큰 썸네일에 최적화)
+            row = i // 4
+            col = i % 4
             self.thumbnail_layout.addWidget(widget, row, col)
             
             self.thumbnail_widgets[file_info['name']] = widget
@@ -1308,6 +1541,7 @@ class VisualSelectionDialog(QDialog):
         self.execute_button.setEnabled(True)
         
         self.update_stats()
+        print(f"✅ 4열 그리드 레이아웃 완료: {len(files)}개 위젯 배치")
         
     def start_thumbnail_extraction(self, files):
         """백그라운드 썸네일 추출 시작"""
@@ -1352,23 +1586,46 @@ class VisualSelectionDialog(QDialog):
         self.update_stats()
         
     def show_preview(self, file_name):
-        """빠른 미리보기 표시"""
+        """미리보기 표시 - 고해상도 최적화"""
         if file_name in self.thumbnail_widgets:
             widget = self.thumbnail_widgets[file_name]
-            file_info = widget.file_info
             
-            # 썸네일을 미리보기에 표시
-            if widget.thumbnail_pixmap:
-                scaled_pixmap = widget.thumbnail_pixmap.scaled(240, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                self.preview_label.setPixmap(scaled_pixmap)
-            else:
-                self.preview_label.setText(f"미리보기\n{file_name}")
+            # 원본 고해상도 썸네일 사용
+            if widget.original_thumbnail and not widget.original_thumbnail.isNull():
+                # 미리보기 영역 크기에 맞게 스케일링 (비율 유지)
+                scaled_preview = widget.original_thumbnail.scaled(
+                    360, 270,  # 새로운 미리보기 영역 크기
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation
+                )
+                self.preview_label.setPixmap(scaled_preview)
                 
-            # 파일 정보 표시
-            info_text = f"파일: {file_name}\n"
-            info_text += f"크기: {self.format_file_size(file_info['size'])}"
-            self.preview_info_label.setText(info_text)
-            
+                # 상세 정보 표시
+                file_info = widget.file_info
+                info_text = f"""
+📁 파일: {file_name}
+📏 크기: {widget.formatted_size}
+🎯 해상도: 2048×925 (20프레임 그리드)
+🎬 상태: 고해상도 캐시 적용
+                """.strip()
+                
+                self.preview_info_label.setText(info_text)
+                print(f"🔍 고해상도 미리보기 표시: {file_name}")
+                
+            elif widget.thumbnail_pixmap and not widget.thumbnail_pixmap.isNull():
+                # 원본이 없으면 스케일된 썸네일 사용
+                self.preview_label.setPixmap(widget.thumbnail_pixmap)
+                self.preview_info_label.setText(f"📁 {file_name}\n📏 {widget.formatted_size}")
+                
+            else:
+                # 썸네일이 없으면 플레이스홀더
+                self.preview_label.setText(f"⏳ 로딩 중...\n{file_name}")
+                self.preview_info_label.setText("썸네일 생성 대기 중")
+        else:
+            # 위젯을 찾을 수 없음
+            self.preview_label.setText("❌ 미리보기 불가")
+            self.preview_info_label.setText("썸네일 위젯을 찾을 수 없습니다")
+    
     def select_all(self):
         """모든 파일 선택"""
         for widget in self.thumbnail_widgets.values():
@@ -1509,3 +1766,36 @@ class VisualSelectionDialog(QDialog):
         # 부모 클래스의 closeEvent 호출
         super().closeEvent(event)
         print("✅ 비주얼 선별 창 완전히 종료됨") 
+
+    def safe_cancel(self):
+        """취소 버튼 클릭 시 우아한 종료 처리"""
+        print("🚪 취소 버튼으로 종료 요청됨")
+        
+        # 썸네일 추출 작업이 진행 중이면 중단
+        if self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
+            print("🛑 진행 중인 썸네일 추출 작업을 안전하게 중단합니다...")
+            
+            # 사용자에게 알림
+            from PyQt5.QtWidgets import QMessageBox, QPushButton
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("작업 중단 중...")
+            msg_box.setText("진행 중인 썸네일 추출 작업을 안전하게 중단하고 있습니다.")
+            msg_box.setInformativeText("현재 처리 중인 파일들을 완료한 후 종료됩니다.")
+            msg_box.setStandardButtons(QMessageBox.NoButton)
+            
+            # 강제 종료 버튼 추가
+            force_button = msg_box.addButton("즉시 강제 종료", QMessageBox.DestructiveRole)
+            
+            # 메시지 박스를 모달이 아닌 방식으로 표시
+            msg_box.setModal(False)
+            msg_box.show()
+            
+            # 백그라운드에서 중단 처리
+            self.stop_thumbnail_extraction()
+            
+            # 메시지 박스 닫기
+            msg_box.close()
+        
+        # 대화상자 취소 처리
+        self.reject()
+        print("✅ 취소 완료 - 비주얼 선별 창 종료됨")
