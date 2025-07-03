@@ -72,6 +72,8 @@ class AccurateSelectionDialog(QDialog):
         self.file_tree.setColumnWidth(3, 80)
         self.file_tree.setColumnWidth(4, 60)
         self.file_tree.itemChanged.connect(self.on_item_changed)
+        # 더블클릭 이벤트 연결 - 영상 재생 기능
+        self.file_tree.itemDoubleClicked.connect(self.on_video_double_clicked)
         splitter.addWidget(self.file_tree)
         
         # 하단 정보 패널
@@ -382,3 +384,28 @@ class AccurateSelectionDialog(QDialog):
         }
         
         return self.selection_result 
+
+    def on_video_double_clicked(self, item, column):
+        """영상 리스트에서 더블클릭시 해당 영상을 재생하는 함수"""
+        if not item:
+            return
+        
+        # 파일명 얻기 (두 번째 컬럼에 저장됨)
+        file_name = item.text(1)
+        if not file_name:
+            QMessageBox.warning(self, "오류", "파일명을 가져올 수 없습니다.")
+            return
+        
+        # 전체 파일 경로 조합
+        file_path = os.path.join(self.current_path, file_name)
+        
+        # 파일 존재 확인
+        if not os.path.exists(file_path):
+            QMessageBox.warning(self, "파일 없음", f"해당 영상 파일이 존재하지 않습니다:\n{file_path}")
+            return
+        
+        try:
+            # 윈도우 기본 플레이어로 영상 재생
+            os.startfile(file_path)
+        except Exception as e:
+            QMessageBox.warning(self, "재생 오류", f"영상을 재생할 수 없습니다:\n{str(e)}") 
