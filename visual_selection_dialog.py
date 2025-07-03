@@ -20,6 +20,7 @@ from ffmpeg_manager import FFmpegManager
 class ThumbnailExtractorThread(QThread):
     """썸네일 추출을 백그라운드에서 처리하는 스레드"""
     thumbnail_ready = pyqtSignal(str, QPixmap)  # 파일명, 썸네일
+    show_timeout_dialog = pyqtSignal(int, int, object)  # 완료수, 남은수, future_to_file
     
     def __init__(self, file_list, thumbnail_size=(2048, 925)):
         super().__init__()
@@ -27,6 +28,7 @@ class ThumbnailExtractorThread(QThread):
         self.thumbnail_size = thumbnail_size
         self.current_path = ""
         self.stop_requested = False  # 중단 요청 플래그
+        self.timeout_extension = 0  # 추가 타임아웃 시간 (초)
         
         # FFmpeg 매니저 초기화
         self.ffmpeg_manager = FFmpegManager()
@@ -37,6 +39,11 @@ class ThumbnailExtractorThread(QThread):
         print("🛑 썸네일 추출 중단 요청됨")
         self.stop_requested = True
     
+    def extend_timeout(self, additional_seconds):
+        """타임아웃 연장"""
+        self.timeout_extension += additional_seconds
+        print(f"⏱️ 타임아웃 {additional_seconds}초 연장됨 (총 연장: {self.timeout_extension}초)")
+        
     def set_path(self, path):
         self.current_path = path
     
@@ -73,16 +80,16 @@ class ThumbnailExtractorThread(QThread):
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 모든 썸네일 추출 작업 제출
             future_to_file = {}
-            for file_info in self.file_list:
+        for file_info in self.file_list:
                 # 중단 요청 확인 (작업 제출 단계)
                 if self.stop_requested:
                     print(f"🛑 작업 제출 중 중단 요청됨. 제출된 작업: {len(future_to_file)}개")
                     break
                     
-                file_name = file_info['name'] 
-                file_path = os.path.join(self.current_path, file_name)
-                
-                if os.path.exists(file_path):
+            file_name = file_info['name']
+            file_path = os.path.join(self.current_path, file_name)
+            
+            if os.path.exists(file_path):
                     future = executor.submit(self.extract_thumbnail, file_path)
                     future_to_file[future] = file_name
             
@@ -93,33 +100,111 @@ class ThumbnailExtractorThread(QThread):
             
             print(f"📋 총 {len(future_to_file)}개 작업 제출됨. 진행 상황 모니터링...")
             
-            # 결과 수집 및 발신
+            # 동적 타임아웃 계산 (네트워크 드라이브 고려)
+            file_count = len(future_to_file)
+            # 첫 번째 파일 경로로 네트워크 드라이브 여부 확인
+            first_file_path = os.path.join(self.current_path, self.file_list[0]['name']) if self.file_list else ""
+            is_network = first_file_path.startswith('\\\\') or first_file_path.startswith('//')
+            
+            if is_network:
+                # 네트워크 드라이브: 파일당 30초, 최소 10분, 최대 30분
+                base_timeout = max(600, min(1800, file_count * 30))
+            else:
+                # 로컬 드라이브: 파일당 15초, 최소 5분, 최대 15분  
+                base_timeout = max(300, min(900, file_count * 15))
+            
+            # 연장 시간 포함
+            dynamic_timeout = base_timeout + self.timeout_extension
+            
+            if is_network:
+                print(f"🌐 네트워크 모드: 타임아웃 {dynamic_timeout}초 ({dynamic_timeout//60}분)")
+            else:
+                print(f"💻 로컬 모드: 타임아웃 {dynamic_timeout}초 ({dynamic_timeout//60}분)")
+            
+            if self.timeout_extension > 0:
+                print(f"   ⏱️ 연장 시간 포함: +{self.timeout_extension}초")
+            
+            # 결과 수집 및 발신 (간단한 방식)
             completed_count = 0
-            for future in as_completed(future_to_file, timeout=300):
-                try:
+            
+            try:
+                for future in as_completed(future_to_file, timeout=dynamic_timeout):
                     # 중단 요청 확인 (결과 처리 단계)
                     if self.stop_requested:
                         print(f"🛑 결과 처리 중 중단 요청됨. 완료된 작업: {completed_count}/{len(future_to_file)}")
-                        # 남은 작업들을 취소하려 시도 (이미 실행 중인 것은 취소 안됨)
+                        # 남은 작업들을 취소하려 시도
                         for remaining_future in future_to_file:
                             if not remaining_future.done():
                                 remaining_future.cancel()
                         break
                     
                     file_name = future_to_file[future]
-                    thumbnail = future.result()
-                    completed_count += 1
-                    
-                    if thumbnail:
-                        self.thumbnail_ready.emit(file_name, thumbnail)
-                        print(f"✅ [{completed_count}/{len(future_to_file)}] {file_name} 완료")
-                    else:
-                        print(f"❌ [{completed_count}/{len(future_to_file)}] {file_name} 실패")
+                    try:
+                        thumbnail = future.result(timeout=10)  # 개별 결과 10초 타임아웃
+                        completed_count += 1
                         
-                except Exception as e:
-                    file_name = future_to_file[future]
-                    completed_count += 1
-                    print(f"💥 [{completed_count}/{len(future_to_file)}] {file_name} 예외: {e}")
+                if thumbnail:
+                    self.thumbnail_ready.emit(file_name, thumbnail)
+                            print(f"✅ [{completed_count}/{len(future_to_file)}] {file_name} 완료")
+                        else:
+                            print(f"❌ [{completed_count}/{len(future_to_file)}] {file_name} 실패")
+                            
+                    except Exception as e:
+                        completed_count += 1
+                        print(f"💥 [{completed_count}/{len(future_to_file)}] {file_name} 예외: {e}")
+                        
+                    # 진행률 업데이트 (10개마다)
+                    if completed_count % 10 == 0:
+                        progress = (completed_count / len(future_to_file)) * 100
+                        elapsed = time.time() - start_time
+                        eta = (elapsed / completed_count) * (len(future_to_file) - completed_count) if completed_count > 0 else 0
+                        print(f"📊 진행률: {progress:.1f}% ({completed_count}/{len(future_to_file)}), 예상 잔여시간: {eta:.0f}초")
+                        
+            except TimeoutError:
+                remaining_count = len(future_to_file) - completed_count
+                print(f"⏰ 배치 타임아웃 ({dynamic_timeout}초)")
+                print(f"📊 진행 상황: {completed_count}개 완료, {remaining_count}개 남음")
+                
+                # 사용자에게 선택권 제공 (UI 스레드에서 처리됨)
+                self.handle_timeout_dialog(completed_count, remaining_count, future_to_file)
+                
+                # 타임아웃 후 남은 작업들을 무제한 대기로 계속 처리
+                print("🔄 타임아웃 후 남은 작업 무제한 대기로 계속 처리...")
+                remaining_futures = [f for f in future_to_file if not f.done()]
+                
+                if remaining_futures and not self.stop_requested:
+                    try:
+                        for future in as_completed(remaining_futures, timeout=None):
+                            if self.stop_requested:
+                                print(f"🛑 후속 처리 중 중단 요청됨")
+                                break
+                                
+                            file_name = future_to_file[future]
+                            try:
+                                thumbnail = future.result(timeout=10)
+                                completed_count += 1
+                                
+                                if thumbnail:
+                                    self.thumbnail_ready.emit(file_name, thumbnail)
+                                    print(f"✅ [후속 {completed_count}/{len(future_to_file)}] {file_name} 완료")
+                                else:
+                                    print(f"❌ [후속 {completed_count}/{len(future_to_file)}] {file_name} 실패")
+                                    
+                            except Exception as e:
+                                completed_count += 1
+                                print(f"💥 [후속 {completed_count}/{len(future_to_file)}] {file_name} 예외: {e}")
+                                
+                    except Exception as e:
+                        print(f"💥 후속 처리 중 예외: {e}")
+                        
+                print(f"🎯 타임아웃 후 최종 완료: {completed_count}/{len(future_to_file)}개")
+                        
+            except Exception as e:
+                print(f"💥 배치 처리 중 예외: {e}")
+                # 예외 상황에서는 안전하게 취소
+                for future in future_to_file:
+                    if not future.done():
+                        future.cancel()
         
         elapsed_time = time.time() - start_time
         if self.stop_requested:
@@ -127,6 +212,13 @@ class ThumbnailExtractorThread(QThread):
         else:
             print(f"🎯 배치 추출 완료: {len(self.file_list)}개 파일, {elapsed_time:.1f}초 소요")
             print(f"   ⚡ 평균 속도: {len(self.file_list)/elapsed_time:.1f}개/초")
+
+    def handle_timeout_dialog(self, completed_count, remaining_count, future_to_file):
+        """타임아웃 발생시 사용자 선택 다이얼로그"""
+        from PyQt5.QtWidgets import QMessageBox, QPushButton
+        
+        # UI 스레드에서 실행되도록 신호 발생
+        self.show_timeout_dialog.emit(completed_count, remaining_count, future_to_file)
     
 
 
@@ -252,11 +344,11 @@ class ThumbnailExtractorThread(QThread):
                 print("🌐 네트워크 드라이브 - 분석 타임아웃 연장 (2분)")
             
             # 씬 변화 감지를 위한 FFmpeg 명령 (네트워크 최적화)
-            cmd = [
-                self.ffmpeg_path,
+                    cmd = [
+                        self.ffmpeg_path, 
                 '-probesize', '50M',  # 네트워크용 프로브 크기 증가
                 '-analyzeduration', '30M',  # 분석 시간 증가
-                '-i', video_path,
+                        '-i', video_path,
                 '-vf', 'select=gt(scene\\,0.25),showinfo',  # 25% 이상 씬 변화
                 '-vsync', 'vfr',
                 '-f', 'null',
@@ -282,7 +374,7 @@ class ThumbnailExtractorThread(QThread):
                 selected_times = [scene_times[i * step] for i in range(target_count)]
                 print(f"✅ 씬 변화 기반 {len(selected_times)}개 프레임 선택")
                 return selected_times
-            else:
+                        else:
                 # 씬 변화가 부족하면 하이브리드 방식
                 print(f"⚠️ 씬 변화 부족 ({len(scene_times)}개), 하이브리드 모드")
                 smart_times = scene_times.copy()
@@ -345,16 +437,16 @@ class ThumbnailExtractorThread(QThread):
                     hw_params = ['-hwaccel', 'd3d11va']
             
             # 하이브리드 시스템: 모든 파일이 로컬에서 처리됨 (메모리 파이프 방식)
-            cmd = [
-                self.ffmpeg_path,
+                        cmd = [
+                            self.ffmpeg_path, 
                 '-hide_banner', '-loglevel', 'error',
                 '-threads', '1',
                 '-probesize', '32M',
                 '-analyzeduration', '10M',
                 *hw_params,
                 '-ss', str(timestamp),
-                '-i', video_path,
-                '-vframes', '1',
+                            '-i', video_path,
+                            '-vframes', '1',
                 '-q:v', '3',
                 '-s', '400x220',
                 '-f', 'image2pipe',
@@ -446,7 +538,7 @@ class ThumbnailExtractorThread(QThread):
                     '-t', '3',  # 3초간
                     '-c', 'copy',  # 재인코딩 없이 복사 (빠름)
                     '-avoid_negative_ts', 'make_zero',
-                    '-y',
+                            '-y',
                     segment_path
                 ]
                 
@@ -455,7 +547,7 @@ class ThumbnailExtractorThread(QThread):
                 if result.returncode == 0 and os.path.exists(segment_path):
                     segment_paths.append((i, segment_path, 1.0))  # (인덱스, 경로, 상대시간)
                     print(f"✅ 세그먼트 {i+1}/20 추출 완료")
-                else:
+                                else:
                     print(f"❌ 세그먼트 {i+1}/20 추출 실패")
                     segment_paths.append((i, None, 1.0))
             
@@ -549,7 +641,7 @@ class ThumbnailExtractorThread(QThread):
                         try:
                             # 세그먼트에서 프레임 추출 (로컬 고속)
                             pixmap = self.extract_frame_from_segment(segment_path, relative_time, hw_accel)
-                            frame_pixmaps.append(pixmap)
+                                    frame_pixmaps.append(pixmap)
                         except Exception as e:
                             print(f"❌ 세그먼트 {i+1} 처리 실패: {e}")
                             frame_pixmaps.append(None)
@@ -568,8 +660,16 @@ class ThumbnailExtractorThread(QThread):
                 
                 print(f"   📊 해상도: 400x220, 품질: 고품질, 가속: {hw_accel or 'CPU'}")
                 
-                # 병렬 프레임 추출
+                # 병렬 프레임 추출 (동적 타임아웃)
                 max_workers = 1 if (is_network_path and processing_mode != "local_copy") else 5
+                
+                # 타임아웃 계산 (네트워크 드라이브 고려)
+                if is_network_path and processing_mode != "local_copy":
+                    extract_timeout = 300  # 네트워크: 5분
+                else:
+                    extract_timeout = 120  # 로컬/복사본: 2분
+                
+                print(f"   ⏱️ 프레임 추출 타임아웃: {extract_timeout}초")
                 
                 frame_results = {}
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -578,18 +678,31 @@ class ThumbnailExtractorThread(QThread):
                         for i, ts in enumerate(timestamps)
                     }
                     
-                    for future in as_completed(future_to_frame, timeout=60):
-                        try:
-                            frame_id, pixmap = future.result()
-                            frame_results[frame_id] = pixmap
-                            if pixmap:
-                                print(f"✅ 프레임 {frame_id+1}/20 완료")
-                            else:
-                                print(f"❌ 프레임 {frame_id+1}/20 실패")
-                        except Exception as e:
-                            frame_id = future_to_frame[future]
-                            print(f"❌ 프레임 {frame_id+1}/20 예외: {e}")
-                            frame_results[frame_id] = None
+                    completed_frames = 0
+                    try:
+                        for future in as_completed(future_to_frame, timeout=extract_timeout):
+                            try:
+                                frame_id, pixmap = future.result(timeout=30)  # 개별 결과 30초 타임아웃
+                                frame_results[frame_id] = pixmap
+                                completed_frames += 1
+                                
+                                if pixmap:
+                                    print(f"✅ 프레임 {frame_id+1}/20 완료")
+                                else:
+                                    print(f"❌ 프레임 {frame_id+1}/20 실패")
+                
+        except Exception as e:
+                                frame_id = future_to_frame[future]
+                                completed_frames += 1
+                                print(f"❌ 프레임 {frame_id+1}/20 예외: {e}")
+                                frame_results[frame_id] = None
+                                
+                    except TimeoutError:
+                        print(f"⏰ 프레임 추출 타임아웃 ({extract_timeout}초), 완료된 프레임: {completed_frames}/20")
+                        # 남은 작업들 취소
+                        for future in future_to_frame:
+                            if not future.done():
+                                future.cancel()
                 
                 frame_pixmaps = [frame_results.get(i) for i in range(20)]
             
@@ -856,7 +969,7 @@ class VideoThumbnailWidget(QWidget):
     selection_changed = pyqtSignal(str, bool)  # 파일명, 선택상태
     preview_requested = pyqtSignal(str)  # 미리보기 요청
     
-    def __init__(self, file_info, formatted_size, file_path=None):
+    def __init__(self, file_info, formatted_size, file_path=None, widget_size=(320, 280), image_size=(300, 220)):
         super().__init__()
         self.file_info = file_info
         self.file_name = file_info['name']
@@ -870,8 +983,11 @@ class VideoThumbnailWidget(QWidget):
         self.hover_timer.setSingleShot(True)
         self.hover_timer.timeout.connect(self.request_preview)
         
-        # 확대된 크기로 설정 (기존 180x160 → 320x280)
-        self.setFixedSize(320, 280)
+        # 동적 크기 설정
+        self.widget_width, self.widget_height = widget_size
+        self.image_width, self.image_height = image_size
+        
+        self.setFixedSize(self.widget_width, self.widget_height)
         self.setup_ui()
         self.update_style()
         
@@ -881,9 +997,9 @@ class VideoThumbnailWidget(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
         
-        # 썸네일 영역 - 대폭 확대 (160x120 → 300x220)
+        # 썸네일 영역 - 동적 크기 적용
         self.thumbnail_label = QLabel()
-        self.thumbnail_label.setFixedSize(300, 220)
+        self.thumbnail_label.setFixedSize(self.image_width, self.image_height)
         self.thumbnail_label.setStyleSheet("""
             QLabel {
                 border: 2px solid #ddd; 
@@ -915,10 +1031,11 @@ class VideoThumbnailWidget(QWidget):
         info_layout.addStretch()
         layout.addLayout(info_layout)
         
-        # 파일명 - 더 긴 이름 표시 가능
+        # 파일명 - 동적 길이 조정
         display_name = self.file_name
-        if len(display_name) > 35:  # 기존 20 → 35자로 증가
-            display_name = display_name[:32] + "..."
+        max_chars = max(20, self.widget_width // 10)  # 위젯 너비에 따라 조정
+        if len(display_name) > max_chars:
+            display_name = display_name[:max_chars-3] + "..."
         
         self.name_label = QLabel(display_name)
         self.name_label.setStyleSheet("""
@@ -942,18 +1059,18 @@ class VideoThumbnailWidget(QWidget):
             
             # 썸네일 레이블 크기에 맞게 스케일링 (비율 유지)
             scaled_pixmap = pixmap.scaled(
-                300, 220,  # 대상 크기
+                self.image_width, self.image_height,  # 동적 크기
                 Qt.KeepAspectRatio,  # 비율 유지
                 Qt.SmoothTransformation  # 부드러운 변환
             )
             
             self.thumbnail_pixmap = scaled_pixmap
             self.thumbnail_label.setPixmap(scaled_pixmap)
-            self.thumbnail_label.setText("")
+        self.thumbnail_label.setText("")
         else:
             # 실패시 플레이스홀더
             self.thumbnail_label.setText("❌ 로딩 실패")
-            
+        
     def on_selection_changed(self, state):
         """선택 상태 변경"""
         self.is_selected = (state == Qt.Checked)
@@ -1007,8 +1124,13 @@ class VideoThumbnailWidget(QWidget):
         if not hasattr(self, 'preview_window'):
             self.preview_window = EnlargedPreviewWindow()
             
-        # 원본 크기로 표시 (최대 800x600으로 제한)
-        max_width, max_height = 800, 600
+        # 원본 크기로 표시 (화면 크기에 따라 동적 제한)
+        parent_dialog = self.parent()
+        if hasattr(parent_dialog, 'optimal_width'):
+            max_width = int(parent_dialog.optimal_width * 0.4)
+            max_height = int(parent_dialog.optimal_height * 0.4)
+        else:
+            max_width, max_height = 800, 600
         original_size = self.original_thumbnail.size()
         
         if original_size.width() > max_width or original_size.height() > max_height:
@@ -1129,8 +1251,43 @@ class VisualSelectionDialog(QDialog):
         self.ffmpeg_manager = FFmpegManager()
         
         self.setWindowTitle("비주얼 영상 선별 도우미 - 고해상도 모드")
-        # 창 크기 대폭 증가 (1200x800 → 1600x1000)
-        self.setGeometry(50, 50, 1600, 1000)
+        
+        # 화면 크기 자동 감지 및 최적 창 크기 설정
+        from PyQt5.QtWidgets import QApplication
+        screen = QApplication.desktop().screenGeometry()
+        screen_width = screen.width()
+        screen_height = screen.height()
+        
+        # 화면 크기에 따른 창 크기 계산 (화면의 85% 사용)
+        self.optimal_width = min(int(screen_width * 0.85), 1920)  # 최대 1920
+        self.optimal_height = min(int(screen_height * 0.85), 1080)  # 최대 1080
+        
+        # 4열 표시를 위한 최소 크기 보장
+        self.optimal_width = max(self.optimal_width, 1400)
+        self.optimal_height = max(self.optimal_height, 800)
+        
+        # 창을 화면 중앙에 위치
+        x = (screen_width - self.optimal_width) // 2
+        y = (screen_height - self.optimal_height) // 2
+        
+        self.setGeometry(x, y, self.optimal_width, self.optimal_height)
+        print(f"🖥️ 화면 크기: {screen_width}×{screen_height}")
+        print(f"📐 창 크기: {self.optimal_width}×{self.optimal_height}")
+        
+        # 동적 썸네일 크기 계산 (4열이 완벽하게 들어가는 크기)
+        available_width = int(self.optimal_width * 0.8) - 80  # 썸네일 영역 여백 고려
+        self.dynamic_thumbnail_width = max(280, (available_width - 30) // 4)  # 4열, 최소 280
+        self.dynamic_thumbnail_height = int(self.dynamic_thumbnail_width * 0.875)  # 비율 유지
+        
+        # 썸네일 내부 이미지 크기도 계산
+        self.dynamic_image_width = self.dynamic_thumbnail_width - 20
+        self.dynamic_image_height = self.dynamic_thumbnail_height - 60
+        
+        print(f"🎨 동적 썸네일 크기: {self.dynamic_thumbnail_width}×{self.dynamic_thumbnail_height}")
+        print(f"🖼️ 동적 이미지 크기: {self.dynamic_image_width}×{self.dynamic_image_height}")
+        
+        # 최소 크기 설정 (4열 완전 표시 보장)
+        self.setMinimumSize(1400, 800)
         self.setModal(True)
         
         # FFmpeg 체크를 지연시켜서 UI가 먼저 표시되도록
@@ -1209,8 +1366,13 @@ class VisualSelectionDialog(QDialog):
         dashboard = self.create_dashboard()
         main_splitter.addWidget(dashboard)
         
-        # 비율 설정 (썸네일:대시보드 = 3:1)
-        main_splitter.setSizes([900, 300])
+        # 비율 설정 (썸네일:대시보드 = 4:1로 조정하여 4열 완전 표시)
+        # 동적 크기에 맞춘 splitter 비율 계산
+        splitter_width = self.optimal_width - 40  # 여백 고려
+        thumbnail_width = int(splitter_width * 0.8)  # 80%
+        dashboard_width = int(splitter_width * 0.2)  # 20%
+        main_splitter.setSizes([thumbnail_width, dashboard_width])
+        print(f"📊 Splitter 크기: 썸네일={thumbnail_width}, 대시보드={dashboard_width}")
         
         # 하단 실행 버튼들
         button_layout = self.create_action_buttons()
@@ -1284,11 +1446,11 @@ class VisualSelectionDialog(QDialog):
         
     def create_thumbnail_area(self):
         """썸네일 그리드 영역 생성 - 고해상도 최적화"""
-        # 스크롤 영역 - 성능 최적화
+        # 스크롤 영역 - 성능 최적화 (4열 완전 표시를 위한 설정)
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 가로 스크롤 비활성화
         
         # 스크롤 성능 최적화
         scroll_area.setStyleSheet("""
@@ -1312,11 +1474,11 @@ class VisualSelectionDialog(QDialog):
             }
         """)
         
-        # 썸네일 컨테이너 - 더 큰 스페이싱
+        # 썸네일 컨테이너 - 4열 완전 표시를 위한 최적화
         self.thumbnail_container = QWidget()
         self.thumbnail_layout = QGridLayout(self.thumbnail_container)
-        self.thumbnail_layout.setSpacing(15)  # 기존 10 → 15로 증가
-        self.thumbnail_layout.setContentsMargins(20, 20, 20, 20)  # 여백 증가
+        self.thumbnail_layout.setSpacing(10)  # 12 → 10으로 더 조정 (4열 맞춤)
+        self.thumbnail_layout.setContentsMargins(10, 15, 10, 15)  # 여백 더 축소
         
         # 컨테이너 스타일
         self.thumbnail_container.setStyleSheet("""
@@ -1373,9 +1535,14 @@ class VisualSelectionDialog(QDialog):
         preview_group = QGroupBox("고해상도 미리보기")
         preview_layout = QVBoxLayout(preview_group)
         
-        # 미리보기 크기 증가 (240x180 → 360x270)
+        # 미리보기 크기 동적 조정
+        self.preview_width = max(280, int(self.optimal_width * 0.15))
+        self.preview_height = int(self.preview_width * 0.75)
+        
         self.preview_label = QLabel("파일 위에 마우스를 올려보세요\n🖱️ 호버: 즉시 확대\n⏱️ 0.5초 대기: 상세 정보")
-        self.preview_label.setFixedSize(360, 270)
+        self.preview_label.setFixedSize(self.preview_width, self.preview_height)
+        
+        print(f"🖼️ 동적 미리보기 크기: {self.preview_width}×{self.preview_height}")
         self.preview_label.setStyleSheet("""
             QLabel {
                 border: 2px solid #ddd; 
@@ -1473,9 +1640,76 @@ class VisualSelectionDialog(QDialog):
             self.load_button.setEnabled(False)
     
     def on_user_changed(self):
-        """사용자 선택 변경시"""
+        """사용자 선택 변경시 - 기존 모델 프로세스 중단 후 새 모델 로딩"""
+        try:
+            print("🔄 모델 변경 감지됨")
+            
+            # 1. 진행 중인 썸네일 추출 작업 즉시 중단
+            self.stop_current_model_loading()
+            
+            # 2. UI 상태 초기화 (안전하게)
+            try:
         self.clear_thumbnails()
         self.update_stats()
+            except Exception as e:
+                print(f"⚠️ UI 초기화 중 오류: {e}")
+            
+            # 3. 사용자에게 전환 상태 표시
+            current_user = self.user_combo.currentText()
+            if current_user and current_user != "사용 가능한 사용자 없음":
+                print(f"📊 새 모델로 전환: {current_user}")
+                # 선택적: 상태 표시를 위한 UI 업데이트
+                try:
+                    if hasattr(self, 'preview_label') and self.preview_label:
+                        self.preview_label.setText(f"⏳ {current_user} 모델 로딩 중...")
+                except Exception as e:
+                    print(f"⚠️ 미리보기 라벨 업데이트 중 오류: {e}")
+            else:
+                print("📊 모델 선택 해제됨")
+                
+        except Exception as e:
+            print(f"❌ 모델 변경 처리 중 치명적 오류: {e}")
+            # 치명적 오류가 발생해도 프로그램이 계속 실행되도록 함
+            import traceback
+            traceback.print_exc()
+    
+    def stop_current_model_loading(self):
+        """현재 진행 중인 모델 로딩 프로세스를 안전하게 중단"""
+        try:
+            if self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
+                print("🛑 기존 모델 로딩 프로세스 중단 시작...")
+                
+                # 1. 중단 요청 신호 전송
+                self.thumbnail_extractor.request_stop()
+                
+                # 2. 충분한 시간 대기 (진행 중인 작업 완료 기회 제공)
+                if not self.thumbnail_extractor.wait(5000):  # 5초 대기로 증가
+                    print("⚠️ 모델 로딩이 5초 내에 중단되지 않음, 추가 대기...")
+                    # terminate() 대신 더 부드러운 종료 시도
+                    if not self.thumbnail_extractor.wait(3000):  # 추가 3초 대기
+                        print("⚠️ 총 8초 대기 후에도 중단되지 않음, 강제 종료 스킵")
+                        # terminate() 호출 제거 - 너무 위험함
+                    else:
+                        print("✅ 기존 모델 로딩 프로세스 지연 중단됨")
+                else:
+                    print("✅ 기존 모델 로딩 프로세스 정상 중단됨")
+                    
+            else:
+                print("ℹ️ 진행 중인 모델 로딩 프로세스 없음")
+                
+        except Exception as e:
+            print(f"❌ 모델 로딩 중단 중 오류 발생: {e}")
+            # 예외가 발생해도 프로그램이 계속 실행되도록 함
+        
+        finally:
+            # 안전한 리소스 정리
+            try:
+                if hasattr(self, 'thumbnail_extractor') and self.thumbnail_extractor:
+                    # 스레드 상태와 관계없이 참조 정리
+                    self.thumbnail_extractor = None
+                    print("🧹 썸네일 추출기 참조 정리 완료")
+            except Exception as e:
+                print(f"⚠️ 리소스 정리 중 오류: {e}")
         
     def load_files(self):
         """선택된 사용자의 파일 로드"""
@@ -1483,13 +1717,17 @@ class VisualSelectionDialog(QDialog):
         if not username or username == "사용 가능한 사용자 없음":
             return
         
+        print(f"📂 모델 '{username}' 파일 로딩 시작...")
+        
         if username not in self.capacity_finder.dic_files:
-            QMessageBox.warning(self, "오류", f"사용자 '{username}'의 데이터를 찾을 수 없습니다.")
+            QMessageBox.warning(self, "오류", f"모델 '{username}'의 데이터를 찾을 수 없습니다.")
             return
         
         # 파일 리스트 가져오기
         user_data = self.capacity_finder.dic_files[username]
         self.current_files = user_data['files'].copy()
+        
+        print(f"✅ 모델 '{username}' 파일 로딩 완료: {len(self.current_files)}개 파일")
         
         # 필터 적용
         self.apply_filters()
@@ -1515,11 +1753,15 @@ class VisualSelectionDialog(QDialog):
             
         print(f"🎨 고해상도 썸네일 위젯 생성: {len(files)}개")
             
-        # 썸네일 위젯 생성
+        # 썸네일 위젯 생성 (동적 크기 적용)
         for i, file_info in enumerate(files):
             formatted_size = self.format_file_size(file_info['size'])
             file_path = os.path.join(self.current_path, file_info['name'])
-            widget = VideoThumbnailWidget(file_info, formatted_size, file_path)
+            
+            # 동적 크기 전달
+            widget_size = (self.dynamic_thumbnail_width, self.dynamic_thumbnail_height)
+            image_size = (self.dynamic_image_width, self.dynamic_image_height)
+            widget = VideoThumbnailWidget(file_info, formatted_size, file_path, widget_size, image_size)
             
             # 신호 연결
             widget.selection_changed.connect(self.on_selection_changed)
@@ -1545,36 +1787,157 @@ class VisualSelectionDialog(QDialog):
         
     def start_thumbnail_extraction(self, files):
         """백그라운드 썸네일 추출 시작"""
-        # 기존 스레드가 실행 중이면 먼저 중단
-        if self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
-            print("🔄 기존 썸네일 추출 작업 중단 후 새 작업 시작...")
-            self.stop_thumbnail_extraction()
-        
-        # 새 스레드 생성 및 시작
+        try:
+            # 기존 스레드가 실행 중이면 먼저 중단
+            if hasattr(self, 'thumbnail_extractor') and self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
+                print("🔄 기존 썸네일 추출 작업 중단 후 새 작업 시작...")
+                self.stop_current_model_loading()
+            
+            # 현재 선택된 모델 정보
+            current_user = self.user_combo.currentText() if hasattr(self, 'user_combo') else "Unknown"
+            print(f"🎬 모델 '{current_user}' 썸네일 추출 시작: {len(files)}개 파일")
+            
+            # 새 스레드 생성 및 시작
         self.thumbnail_extractor = ThumbnailExtractorThread(files)
         self.thumbnail_extractor.set_path(self.current_path)
         self.thumbnail_extractor.thumbnail_ready.connect(self.on_thumbnail_ready)
+            self.thumbnail_extractor.show_timeout_dialog.connect(self.handle_batch_timeout)
         self.thumbnail_extractor.start()
-        
-        print(f"🎬 새 썸네일 추출 작업 시작: {len(files)}개 파일")
+            
+            print(f"✅ 모델 '{current_user}' 로딩 프로세스 활성화됨")
+            
+        except Exception as e:
+            print(f"❌ 썸네일 추출 시작 중 오류: {e}")
+            # 오류가 발생해도 프로그램이 계속 실행되도록 함
+            import traceback
+            traceback.print_exc()
         
     @pyqtSlot(str, QPixmap)
     def on_thumbnail_ready(self, file_name, thumbnail):
         """썸네일이 준비되었을 때"""
         if file_name in self.thumbnail_widgets:
             self.thumbnail_widgets[file_name].set_thumbnail(thumbnail)
+    
+    @pyqtSlot(int, int, object)
+    def handle_batch_timeout(self, completed_count, remaining_count, future_to_file):
+        """배치 타임아웃 처리 - 사용자 선택 다이얼로그"""
+        from PyQt5.QtWidgets import QMessageBox, QPushButton
+        
+        # 타임아웃 상황 설명
+        timeout_msg = QMessageBox(self)
+        timeout_msg.setWindowTitle("⏰ 썸네일 추출 타임아웃")
+        timeout_msg.setIcon(QMessageBox.Warning)
+        
+        message = f"""
+📊 현재 진행 상황:
+   ✅ 완료: {completed_count}개
+   ⏳ 남음: {remaining_count}개
+   
+⏰ 타임아웃이 발생했습니다.
+   어떻게 처리하시겠습니까?
+        """.strip()
+        
+        timeout_msg.setText(message)
+        
+        # 커스텀 버튼들
+        continue_btn = timeout_msg.addButton("🔄 무제한 대기하며 계속", QMessageBox.ActionRole)
+        partial_btn = timeout_msg.addButton("✅ 완료된 것만 사용", QMessageBox.AcceptRole)
+        retry_btn = timeout_msg.addButton("🔁 남은 파일만 다시 시도", QMessageBox.ActionRole)
+        cancel_btn = timeout_msg.addButton("🛑 취소", QMessageBox.RejectRole)
+        
+        # 기본 버튼 설정
+        timeout_msg.setDefaultButton(partial_btn)
+        
+        # 다이얼로그 실행
+        result = timeout_msg.exec_()
+        
+        # 사용자 선택에 따른 처리
+        clicked_button = timeout_msg.clickedButton()
+        
+        if clicked_button == continue_btn:
+            # 사용자가 계속 기다리기를 선택 - 다이얼로그만 닫고 백그라운드 계속 실행
+            print("🔄 사용자 선택: 계속 기다리기 (백그라운드 실행 유지)")
+            self._continue_waiting(future_to_file)
+            
+        elif clicked_button == partial_btn:
+            # 완료된 것만 사용하고 계속
+            print("✅ 사용자 선택: 완료된 썸네일만 사용")
+            self._finish_with_partial_results(future_to_file, completed_count)
+            
+        elif clicked_button == retry_btn:
+            # 남은 파일들만 다시 시도
+            print("🔁 사용자 선택: 남은 파일만 재시도")
+            self._retry_remaining_files(future_to_file)
+            
+        else:  # cancel_btn
+            # 모든 작업 취소
+            print("🛑 사용자 선택: 모든 작업 취소")
+            self._cancel_all_tasks(future_to_file)
+    
+    def _continue_waiting(self, future_to_file):
+        """계속 기다리기 - 백그라운드 실행 유지"""
+        from PyQt5.QtWidgets import QMessageBox
+        
+        info_msg = QMessageBox.information(
+            self, "🔄 계속 진행", 
+            "썸네일 추출이 백그라운드에서 계속 진행됩니다.\n"
+            "완료된 썸네일들이 순차적으로 표시됩니다.\n\n"
+            "언제든지 중단 버튼을 눌러 정지할 수 있습니다."
+        )
+        print("✅ 사용자가 계속 대기 선택 - 백그라운드 실행 유지")
+        
+    def _finish_with_partial_results(self, future_to_file, completed_count):
+        """부분 결과로 완료"""
+        # 남은 작업들 취소
+        if hasattr(self, 'thumbnail_extractor') and self.thumbnail_extractor:
+            self.thumbnail_extractor.request_stop()
+        
+        print(f"✅ {completed_count}개 완료된 썸네일로 계속 진행")
+        
+    def _retry_remaining_files(self, future_to_file):
+        """남은 파일들만 재시도"""
+        # 현재는 간단하게 남은 작업 취소하고 사용자가 수동으로 재시도하도록
+        self._cancel_all_tasks(future_to_file)
+        
+        from PyQt5.QtWidgets import QMessageBox
+        retry_msg = QMessageBox.information(
+            self, "🔁 재시도 안내", 
+            "남은 파일들은 취소되었습니다.\n원하시면 다시 로드 버튼을 눌러 재시도해주세요."
+        )
+        
+    def _cancel_all_tasks(self, future_to_file):
+        """모든 작업 취소"""
+        if hasattr(self, 'thumbnail_extractor') and self.thumbnail_extractor:
+            self.thumbnail_extractor.request_stop()
+        print("🛑 모든 썸네일 추출 작업 취소됨")
             
     def clear_thumbnails(self):
         """모든 썸네일 제거"""
-        for widget in self.thumbnail_widgets.values():
+        try:
+            # 위젯 안전 삭제
+            for widget in list(self.thumbnail_widgets.values()):
+                try:
             widget.deleteLater()
+                except Exception as e:
+                    print(f"⚠️ 위젯 삭제 중 오류: {e}")
+            
         self.thumbnail_widgets.clear()
         self.selected_files.clear()
+            print("🧹 썸네일 위젯 정리 완료")
+            
+        except Exception as e:
+            print(f"⚠️ 썸네일 정리 중 오류: {e}")
         
-        # 썸네일 추출 중단
-        if self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
+        # 썸네일 추출 중단 (새로운 모델 전환 시스템 사용)
+        # 참고: stop_current_model_loading은 on_user_changed에서 이미 호출되므로 
+        # 중복 호출 방지를 위해 여기서는 간단한 체크만 수행
+        try:
+            if hasattr(self, 'thumbnail_extractor') and self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
+                print("🔄 clear_thumbnails에서 잔여 프로세스 정리")
             self.thumbnail_extractor.quit()
-            self.thumbnail_extractor.wait()
+                self.thumbnail_extractor.wait(1000)  # 1초 타임아웃
+        except Exception as e:
+            print(f"⚠️ 잔여 프로세스 정리 중 오류: {e}")
             
     def on_selection_changed(self, file_name, is_selected):
         """선택 상태 변경 처리"""
@@ -1593,8 +1956,9 @@ class VisualSelectionDialog(QDialog):
             # 원본 고해상도 썸네일 사용
             if widget.original_thumbnail and not widget.original_thumbnail.isNull():
                 # 미리보기 영역 크기에 맞게 스케일링 (비율 유지)
+                preview_size = self.preview_label.size()
                 scaled_preview = widget.original_thumbnail.scaled(
-                    360, 270,  # 새로운 미리보기 영역 크기
+                    preview_size.width(), preview_size.height(),  # 동적 미리보기 크기
                     Qt.KeepAspectRatio,
                     Qt.SmoothTransformation
                 )
@@ -1609,7 +1973,7 @@ class VisualSelectionDialog(QDialog):
 🎬 상태: 고해상도 캐시 적용
                 """.strip()
                 
-                self.preview_info_label.setText(info_text)
+            self.preview_info_label.setText(info_text)
                 print(f"🔍 고해상도 미리보기 표시: {file_name}")
                 
             elif widget.thumbnail_pixmap and not widget.thumbnail_pixmap.isNull():
@@ -1625,7 +1989,7 @@ class VisualSelectionDialog(QDialog):
             # 위젯을 찾을 수 없음
             self.preview_label.setText("❌ 미리보기 불가")
             self.preview_info_label.setText("썸네일 위젯을 찾을 수 없습니다")
-    
+            
     def select_all(self):
         """모든 파일 선택"""
         for widget in self.thumbnail_widgets.values():
@@ -1716,23 +2080,12 @@ class VisualSelectionDialog(QDialog):
             'username': self.user_combo.currentText()
         }
         
-        return self.selection_result
+        return self.selection_result 
     
     def stop_thumbnail_extraction(self):
-        """썸네일 추출 작업 안전하게 중단"""
-        if self.thumbnail_extractor and self.thumbnail_extractor.isRunning():
-            print("🛑 썸네일 추출 스레드 중단 시작...")
-            
-            # 중단 요청
-            self.thumbnail_extractor.request_stop()
-            
-            # 최대 5초 대기 후 강제 종료
-            if not self.thumbnail_extractor.wait(5000):  # 5초 대기
-                print("⚠️ 스레드가 5초 내에 종료되지 않아 강제 종료")
-                self.thumbnail_extractor.terminate()
-                self.thumbnail_extractor.wait(1000)  # 추가 1초 대기
-            else:
-                print("✅ 썸네일 추출 스레드 정상 종료됨")
+        """썸네일 추출 작업 안전하게 중단 (레거시 호환성 유지)"""
+        print("🔄 레거시 stop_thumbnail_extraction 호출됨")
+        self.stop_current_model_loading()
     
     def closeEvent(self, event):
         """창 닫기 이벤트 처리 - 썸네일 추출 작업 정리"""
