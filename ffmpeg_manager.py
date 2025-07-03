@@ -132,7 +132,14 @@ class FFmpegDownloadThread(QThread):
         temp_extract_dir = None
         
         try:
+            print(f"FFmpeg 다운로드 시작: {self.download_url}")
+            print(f"목적지 경로: {self.extract_path}")
+            
             self.status_updated.emit("다운로드 중...")
+            
+            # 목적지 폴더 미리 생성
+            os.makedirs(self.extract_path, exist_ok=True)
+            print(f"목적지 폴더 생성됨: {self.extract_path}")
             
             # 파일 확장자 판단
             if self.download_url.endswith('.tar.xz'):
@@ -144,7 +151,11 @@ class FFmpegDownloadThread(QThread):
                 temp_file = os.path.join(self.extract_path, "ffmpeg_temp.zip")
                 
             temp_extract_dir = os.path.join(self.extract_path, "temp_extract")
-            os.makedirs(self.extract_path, exist_ok=True)
+            
+            print(f"임시 파일 경로: {temp_file}")
+            print(f"임시 압축해제 경로: {temp_extract_dir}")
+            
+            # 임시 디렉토리 생성
             os.makedirs(temp_extract_dir, exist_ok=True)
             
             # 다운로드
@@ -153,49 +164,79 @@ class FFmpegDownloadThread(QThread):
                     progress = (block_num * block_size / total_size) * 60  # 60%까지는 다운로드
                     self.progress_updated.emit(int(progress))
             
+            print("파일 다운로드 시작...")
             urllib.request.urlretrieve(self.download_url, temp_file, progress_hook)
+            
+            # 다운로드 완료 확인
+            if not os.path.exists(temp_file):
+                raise Exception(f"다운로드된 파일이 없습니다: {temp_file}")
+            
+            file_size = os.path.getsize(temp_file)
+            print(f"다운로드 완료: {temp_file} ({file_size} bytes)")
             
             self.status_updated.emit("압축 해제 중...")
             self.progress_updated.emit(65)
             
             # 파일 형태에 따른 압축 해제
+            print("압축 해제 시작...")
             if temp_file.endswith('.tar.xz'):
                 # tar.xz 파일 처리 (Linux)
+                print("tar.xz 파일 압축 해제 중...")
                 with tarfile.open(temp_file, 'r:xz') as tar_ref:
                     tar_ref.extractall(temp_extract_dir)
             else:
                 # zip 파일 처리 (Windows, macOS)
+                print("zip 파일 압축 해제 중...")
                 with zipfile.ZipFile(temp_file, 'r') as zip_ref:
                     zip_ref.extractall(temp_extract_dir)
+            
+            # 압축 해제 결과 확인
+            if os.path.exists(temp_extract_dir):
+                extracted_items = os.listdir(temp_extract_dir)
+                print(f"압축 해제 완료, 내용: {extracted_items}")
+            else:
+                raise Exception(f"압축 해제 실패: {temp_extract_dir} 폴더가 생성되지 않음")
             
             self.progress_updated.emit(75)
             self.status_updated.emit("폴더 구조 정리 중...")
             
             # 압축 해제된 폴더 구조 분석 및 정리
+            print("폴더 구조 정리 시작...")
             self._organize_extracted_files(temp_extract_dir)
             
             self.progress_updated.emit(90)
             
             # 임시 파일 정리
+            print("임시 파일 정리 중...")
             if temp_file and os.path.exists(temp_file):
                 os.remove(temp_file)
+                print(f"임시 파일 삭제: {temp_file}")
             if temp_extract_dir and os.path.exists(temp_extract_dir):
                 shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                print(f"임시 폴더 삭제: {temp_extract_dir}")
             
             self.progress_updated.emit(100)
             self.status_updated.emit("설치 완료!")
             
+            print("FFmpeg 설치 완전히 완료!")
             self.download_finished.emit(True, "FFmpeg 설치가 완료되었습니다!")
             
         except Exception as e:
+            print(f"FFmpeg 설치 중 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
+            
             # 실패 시 임시 파일들 정리
             try:
                 if temp_file and os.path.exists(temp_file):
                     os.remove(temp_file)
+                    print(f"실패 후 임시 파일 정리: {temp_file}")
                 if temp_extract_dir and os.path.exists(temp_extract_dir):
                     shutil.rmtree(temp_extract_dir, ignore_errors=True)
-            except:
-                pass
+                    print(f"실패 후 임시 폴더 정리: {temp_extract_dir}")
+            except Exception as cleanup_error:
+                print(f"정리 중 오류: {cleanup_error}")
+            
             self.download_finished.emit(False, f"설치 실패: {str(e)}")
     
     def _organize_extracted_files(self, temp_extract_dir):
@@ -203,22 +244,35 @@ class FFmpegDownloadThread(QThread):
         try:
             import stat
             
+            print(f"압축 해제된 파일 정리 시작: {temp_extract_dir} -> {self.extract_path}")
+            
+            # 목적지 폴더가 없으면 생성
+            os.makedirs(self.extract_path, exist_ok=True)
+            
             # 압축 해제된 폴더 내용 확인
             extracted_items = os.listdir(temp_extract_dir)
+            print(f"압축 해제된 항목들: {extracted_items}")
             
             if len(extracted_items) == 1 and os.path.isdir(os.path.join(temp_extract_dir, extracted_items[0])):
                 # BtbN 형태: ffmpeg-master-latest-win64-gpl/ 폴더 하나만 있는 경우
                 source_dir = os.path.join(temp_extract_dir, extracted_items[0])
+                print(f"단일 폴더 발견: {source_dir}")
                 
                 # bin 폴더가 있는지 확인
                 bin_dir = os.path.join(source_dir, 'bin')
                 if os.path.exists(bin_dir):
+                    print("bin 폴더 발견, 바이너리 복사 중...")
                     # bin 폴더를 최종 목적지로 복사
                     target_bin_dir = os.path.join(self.extract_path, 'bin')
                     if os.path.exists(target_bin_dir):
                         shutil.rmtree(target_bin_dir)
                     shutil.copytree(bin_dir, target_bin_dir)
                     print(f"FFmpeg 바이너리를 {target_bin_dir}로 복사 완료")
+                    
+                    # 복사된 파일들 확인
+                    if os.path.exists(target_bin_dir):
+                        bin_files = os.listdir(target_bin_dir)
+                        print(f"복사된 바이너리 파일들: {bin_files}")
                     
                     # macOS/Linux에서 실행 권한 설정
                     system = platform.system().lower()
@@ -230,10 +284,14 @@ class FFmpegDownloadThread(QThread):
                                 print(f"실행 권한 설정: {binary_path}")
                                 
                 else:
+                    print("bin 폴더 없음, 전체 내용 복사 중...")
                     # bin 폴더가 없으면 전체 내용을 복사
                     for item in os.listdir(source_dir):
                         source_item = os.path.join(source_dir, item)
                         target_item = os.path.join(self.extract_path, item)
+                        
+                        print(f"복사 중: {source_item} -> {target_item}")
+                        
                         if os.path.exists(target_item):
                             if os.path.isdir(target_item):
                                 shutil.rmtree(target_item)
@@ -252,10 +310,13 @@ class FFmpegDownloadThread(QThread):
                                 os.chmod(target_item, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
                                 print(f"실행 권한 설정: {target_item}")
             else:
+                print("여러 항목 발견, 직접 복사 중...")
                 # 여러 파일/폴더가 직접 압축된 경우
                 for item in extracted_items:
                     source_item = os.path.join(temp_extract_dir, item)
                     target_item = os.path.join(self.extract_path, item)
+                    
+                    print(f"복사 중: {source_item} -> {target_item}")
                     
                     if os.path.exists(target_item):
                         if os.path.isdir(target_item):
@@ -274,9 +335,18 @@ class FFmpegDownloadThread(QThread):
                         if any(binary in os.path.basename(target_item) for binary in ['ffmpeg', 'ffprobe', 'ffplay']):
                             os.chmod(target_item, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
                             print(f"실행 권한 설정: {target_item}")
+            
+            # 최종 결과 확인
+            if os.path.exists(self.extract_path):
+                final_contents = os.listdir(self.extract_path)
+                print(f"최종 ffmpeg_bundle 내용: {final_contents}")
+            else:
+                print(f"경고: 목적지 폴더가 생성되지 않음: {self.extract_path}")
                         
         except Exception as e:
             print(f"폴더 구조 정리 실패: {e}")
+            import traceback
+            traceback.print_exc()
             raise e
 
 class FFmpegProgressDialog(QDialog):
@@ -523,11 +593,27 @@ class FFmpegManager:
     
     def download_ffmpeg(self, parent=None):
         """FFmpeg 다운로드 및 설치"""
+        print(f"FFmpeg 다운로드 요청됨. 목적지: {self.ffmpeg_dir}")
+        
         download_url = self.get_download_info()
         if not download_url:
+            print("지원되지 않는 시스템")
             QMessageBox.warning(parent, "지원되지 않는 시스템", 
                               "현재 시스템은 자동 설치가 지원되지 않습니다.\n수동으로 FFmpeg를 설치해주세요.")
             return False
+        
+        print(f"다운로드 URL: {download_url}")
+        
+        # 기존 ffmpeg_bundle 폴더가 있으면 백업
+        if os.path.exists(self.ffmpeg_dir):
+            backup_dir = f"{self.ffmpeg_dir}_backup"
+            if os.path.exists(backup_dir):
+                shutil.rmtree(backup_dir, ignore_errors=True)
+            try:
+                shutil.move(self.ffmpeg_dir, backup_dir)
+                print(f"기존 FFmpeg 폴더 백업: {backup_dir}")
+            except Exception as e:
+                print(f"백업 실패: {e}")
         
         # 다운로드 진행 다이얼로그
         progress_dialog = FFmpegProgressDialog(parent)
@@ -554,10 +640,34 @@ class FFmpegManager:
         download_thread.wait()
         
         if success:
+            print("다운로드 성공! FFmpeg 활성화 중...")
             self.enable_ffmpeg()
-            QMessageBox.information(parent, "설치 완료", message)
+            
+            # 설치 결과 검증
+            ffmpeg_path, ffprobe_path = self.get_ffmpeg_paths()
+            if ffmpeg_path and ffprobe_path:
+                print(f"FFmpeg 설치 검증 성공: {ffmpeg_path}")
+                QMessageBox.information(parent, "설치 완료", 
+                                      f"{message}\n\n설치 경로: {self.ffmpeg_dir}")
+            else:
+                print("FFmpeg 설치 검증 실패")
+                QMessageBox.warning(parent, "설치 검증 실패", 
+                                  "파일은 다운로드되었지만 FFmpeg를 찾을 수 없습니다.")
+                success = False
         else:
-            QMessageBox.critical(parent, "설치 실패", message)
+            print(f"다운로드 실패: {message}")
+            # 실패 시 백업 복원
+            backup_dir = f"{self.ffmpeg_dir}_backup"
+            if os.path.exists(backup_dir):
+                try:
+                    if os.path.exists(self.ffmpeg_dir):
+                        shutil.rmtree(self.ffmpeg_dir, ignore_errors=True)
+                    shutil.move(backup_dir, self.ffmpeg_dir)
+                    print("백업에서 복원됨")
+                except Exception as e:
+                    print(f"백업 복원 실패: {e}")
+            
+            QMessageBox.critical(parent, "설치 실패", f"{message}\n\n설치를 다시 시도하거나 수동으로 FFmpeg를 설치해주세요.")
         
         return success
     
