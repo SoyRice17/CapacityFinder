@@ -4,14 +4,16 @@ import subprocess
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLineEdit, 
                              QPushButton, QLabel, QMessageBox, QComboBox, QSplitter,
-                             QDialog)
+                             QDialog, QMenu, QAction)
 from path_dialog import PathSelectionDialog
 from decision_dialog import ModelDecisionDialog, SortSelectionDialog
 from user_site_comparison_dialog import UserSiteComparisonDialog
 from accurate_selection_dialog import AccurateSelectionDialog
 from visual_selection_dialog import VisualSelectionDialog
+from rating_dialog import RatingDialog
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
+import json
 
 class MainWindow(QMainWindow):
     def __init__(self, on_path_confirmed=None, path_history=None):
@@ -54,6 +56,11 @@ class MainWindow(QMainWindow):
         
         # 더블클릭 이벤트 연결
         self.tree_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
+        
+        # 우클릭 컨텍스트 메뉴 설정
+        self.tree_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree_widget.customContextMenuRequested.connect(self.show_context_menu)
+        
         layout.addWidget(self.tree_widget, 4)
 
         # 현재 경로 표시 라벨
@@ -661,11 +668,126 @@ class MainWindow(QMainWindow):
             else:
                 print("경로가 설정되지 않았거나 파일명이 없습니다.")
         else:
-            # 사용자 아이템인 경우 (폴더 확장/축소)
-            if item.isExpanded():
-                item.setExpanded(False)
-            else:
-                item.setExpanded(True)
+            # 사용자 아이템인 경우 - 레이팅 다이얼로그 열기
+            username = item.text(0)
+            if username and not username.startswith("==="):  # 헤더가 아닌 실제 사용자명인 경우
+                # 레이팅 표시가 포함된 경우 깨끗한 사용자명만 추출
+                clean_username = username.split(" ⭐")[0]
+                self.open_rating_dialog(clean_username)
+
+    def show_context_menu(self, position):
+        """우클릭 컨텍스트 메뉴 표시"""
+        item = self.tree_widget.itemAt(position)
+        if not item:
+            return
+            
+        menu = QMenu()
+        
+        # 부모가 있으면 파일 아이템, 없으면 사용자 아이템
+        parent = item.parent()
+        
+        if parent is None:  # 사용자 아이템
+            username = item.text(0)
+            if username and not username.startswith("==="):  # 헤더가 아닌 실제 사용자
+                clean_username = username.split(" ⭐")[0]
+                
+                # 레이팅 관련 메뉴
+                rating_action = QAction("🌟 레이팅 작성/수정", self)
+                rating_action.triggered.connect(lambda: self.open_rating_dialog(clean_username))
+                menu.addAction(rating_action)
+                
+                menu.addSeparator()
+                
+                # 폴더 확장/축소 메뉴
+                if item.isExpanded():
+                    expand_action = QAction("📁 폴더 축소", self)
+                    expand_action.triggered.connect(lambda: item.setExpanded(False))
+                else:
+                    expand_action = QAction("📂 폴더 확장", self)
+                    expand_action.triggered.connect(lambda: item.setExpanded(True))
+                menu.addAction(expand_action)
+                
+        else:  # 파일 아이템
+            file_name = item.text(0)
+            
+            # 파일 열기 메뉴
+            open_action = QAction("🗂️ 파일 열기", self)
+            open_action.triggered.connect(lambda: self.open_file_from_menu(file_name))
+            menu.addAction(open_action)
+        
+        # 메뉴 표시
+        if not menu.isEmpty():
+            menu.exec_(self.tree_widget.mapToGlobal(position))
+
+    def open_file_from_menu(self, file_name):
+        """컨텍스트 메뉴에서 파일 열기"""
+        if self.current_path and file_name:
+            file_path = os.path.join(self.current_path, file_name)
+            
+            if os.path.exists(file_path):
+                try:
+                    if sys.platform.startswith('win'):
+                        os.startfile(file_path)
+                    elif sys.platform.startswith('darwin'):
+                        subprocess.call(['open', file_path])
+                    else:
+                        subprocess.call(['xdg-open', file_path])
+                except Exception as e:
+                    msg = QMessageBox()
+                    msg.setIcon(QMessageBox.Warning)
+                    msg.setWindowTitle("파일 열기 오류")
+                    msg.setText(f"파일을 열 수 없습니다:\n{str(e)}")
+                    msg.exec_()
+
+    def open_rating_dialog(self, username):
+        """레이팅 다이얼로그 열기"""
+        try:
+            dialog = RatingDialog(username, self)
+            if dialog.exec_() == RatingDialog.Accepted:
+                # 레이팅이 저장되었으면 트리 위젯 업데이트
+                self.update_user_ratings_display()
+        except Exception as e:
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Critical)
+            msg.setWindowTitle("오류")
+            msg.setText(f"레이팅 다이얼로그 오류:\n{str(e)}")
+            msg.exec_()
+            print(f"레이팅 다이얼로그 오류: {e}")
+
+    def load_user_ratings(self):
+        """사용자 레이팅 로드"""
+        ratings = {}
+        rating_file = "user_ratings.json"
+        if os.path.exists(rating_file):
+            try:
+                with open(rating_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    ratings = data.get('ratings', {})
+            except Exception as e:
+                print(f"레이팅 로드 오류: {e}")
+        return ratings
+
+    def update_user_ratings_display(self):
+        """트리 위젯의 사용자 레이팅 표시 업데이트"""
+        ratings = self.load_user_ratings()
+        
+        # 트리 위젯의 모든 최상위 아이템을 순회
+        for i in range(self.tree_widget.topLevelItemCount()):
+            item = self.tree_widget.topLevelItem(i)
+            username = item.text(0)
+            
+            # 헤더가 아닌 실제 사용자 아이템인 경우
+            if username and not username.startswith("==="):
+                if username in ratings:
+                    rating_info = ratings[username]
+                    rating_value = rating_info.get('rating', 0)
+                    # 사용자명에 레이팅 표시 추가
+                    stars = "⭐" * rating_value
+                    item.setText(0, f"{username} {stars} ({rating_value}/5)")
+                else:
+                    # 레이팅이 없는 경우 기본 사용자명만 표시
+                    clean_username = username.split(" ⭐")[0]  # 기존 레이팅 제거
+                    item.setText(0, clean_username)
 
     def add_result_to_list(self, result_text):
         """메인에서 호출해서 리스트에 결과를 추가하는 함수 (기존 호환성 유지)"""
@@ -723,9 +845,32 @@ class MainWindow(QMainWindow):
         
         # 사용자 아이템 생성
         user_item = QTreeWidgetItem(self.tree_widget)
-        user_item.setText(0, username)
+        
+        # 레이팅 정보 로드하여 사용자명에 표시
+        ratings = self.load_user_ratings()
+        display_name = username
+        if username in ratings:
+            rating_info = ratings[username]
+            rating_value = rating_info.get('rating', 0)
+            stars = "⭐" * rating_value
+            display_name = f"{username} {stars} ({rating_value}/5)"
+        
+        user_item.setText(0, display_name)
         user_item.setText(1, formatted_size)
         user_item.setText(2, str(len(user_data['files'])))
+        
+        # 레이팅이 있는 경우 툴팁에 코멘트 추가
+        if username in ratings:
+            rating_info = ratings[username]
+            comment = rating_info.get('comment', '')
+            last_rating = rating_info.get('last_rating', '')
+            if comment or last_rating:
+                tooltip_text = f"레이팅: {rating_info.get('rating', 0)}/5"
+                if comment:
+                    tooltip_text += f"\n코멘트: {comment}"
+                if last_rating:
+                    tooltip_text += f"\n작성일: {last_rating}"
+                user_item.setToolTip(0, tooltip_text)
         
         # 사용자 아이템 스타일 설정
         light_blue = QColor(173, 216, 230)  # lightBlue
@@ -794,9 +939,32 @@ class MainWindow(QMainWindow):
             
             # 사용자 아이템 생성
             user_item = QTreeWidgetItem(self.tree_widget)
-            user_item.setText(0, username)
+            
+            # 레이팅 정보 로드하여 사용자명에 표시
+            ratings = self.load_user_ratings()
+            display_name = username
+            if username in ratings:
+                rating_info = ratings[username]
+                rating_value = rating_info.get('rating', 0)
+                stars = "⭐" * rating_value
+                display_name = f"{username} {stars} ({rating_value}/5)"
+                
+            user_item.setText(0, display_name)
             user_item.setText(1, formatted_size)
             user_item.setText(2, str(len(user_data['files'])))
+            
+            # 레이팅이 있는 경우 툴팁에 코멘트 추가
+            if username in ratings:
+                rating_info = ratings[username]
+                comment = rating_info.get('comment', '')
+                last_rating = rating_info.get('last_rating', '')
+                if comment or last_rating:
+                    tooltip_text = f"레이팅: {rating_info.get('rating', 0)}/5"
+                    if comment:
+                        tooltip_text += f"\n코멘트: {comment}"
+                    if last_rating:
+                        tooltip_text += f"\n작성일: {last_rating}"
+                    user_item.setToolTip(0, tooltip_text)
             
             # 사용자 아이템 스타일 설정
             light_blue = QColor(173, 216, 230)  # lightBlue

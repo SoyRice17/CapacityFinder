@@ -486,6 +486,20 @@ class ModelDecisionDialog(QDialog):
         if rating_count > 1:
             message += f" (총 {rating_count}번 평가)"
         
+        # 히스토리 표시 추가
+        history = user_data.get('history', [])
+        if history:
+            message += f"\n\n📜 이전 평가 기록:"
+            for record in history[-2:]:  # 최근 2개만 표시
+                h_stars = "⭐" * record.get('rating', 0)
+                h_text = f"\n• {record.get('date', '')} - {h_stars} ({record.get('rating', 0)}/5)"
+                if record.get('comment'):
+                    h_text += f" - \"{record.get('comment')}\""
+                message += h_text
+            
+            if len(history) > 2:
+                message += f"\n... 외 {len(history) - 2}개 더"
+        
         return {
             'is_new': False,
             'message': message,
