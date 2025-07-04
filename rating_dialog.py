@@ -17,7 +17,7 @@ class RatingDialog(QDialog):
         
         self.setWindowTitle(f"🌟 {username} 사용자 레이팅")
         self.setModal(True)
-        self.setFixedSize(600, 550)  # 세로 크기 늘림
+        self.setFixedSize(600, 700)  # 세로 크기 늘림
         
         # 기존 레이팅 로드
         self.load_existing_rating()
