@@ -162,6 +162,26 @@ class AccurateSelectionDialog(QDialog):
             }
         """)
         
+        # === 정리도우미로 돌아가기 버튼 (네비게이션 컨텍스트가 있을 때만) ===
+        if hasattr(self.capacity_finder, 'navigation_context') and self.capacity_finder.navigation_context.get('source_tool') == 'decision_dialog':
+            self.return_button = QPushButton("⬅️ 정리도우미로 돌아가기")
+            self.return_button.clicked.connect(self.return_to_decision_dialog)
+            self.return_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #f39c12;
+                    color: white;
+                    border: none;
+                    border-radius: 5px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #e67e22;
+                }
+            """)
+            
+            final_button_layout.addWidget(self.return_button)
         final_button_layout.addStretch()
         final_button_layout.addWidget(self.execute_button)
         final_button_layout.addWidget(cancel_button)
@@ -408,4 +428,47 @@ class AccurateSelectionDialog(QDialog):
             # 윈도우 기본 플레이어로 영상 재생
             os.startfile(file_path)
         except Exception as e:
-            QMessageBox.warning(self, "재생 오류", f"영상을 재생할 수 없습니다:\n{str(e)}") 
+            QMessageBox.warning(self, "재생 오류", f"영상을 재생할 수 없습니다:\n{str(e)}")
+            
+    def return_to_decision_dialog(self):
+        """정리도우미로 돌아가기 - 안전한 중단 처리 포함"""
+        print("🔄 정확한 선별에서 정리도우미로 돌아가기 요청됨")
+        
+        # 1. 진행 중인 분석 작업이 있으면 중단 처리
+        if hasattr(self, 'progress_bar') and self.progress_bar.isVisible():
+            print("🛑 진행 중인 분석 작업 중단...")
+            self.progress_bar.setVisible(False)
+            
+        # 2. 네비게이션 컨텍스트 확인
+        if hasattr(self.capacity_finder, 'navigation_context'):
+            nav_context = self.capacity_finder.navigation_context
+            if nav_context.get('source_tool') == 'decision_dialog':
+                print("✅ 정리도우미로 복귀 처리")
+                
+                # 원본 다이얼로그 참조 가져오기
+                original_dialog = nav_context.get('original_dialog')
+                if original_dialog:
+                    print("🔗 원본 정리도우미 다이얼로그 복원")
+                    
+                    # 현재 다이얼로그 닫기
+                    self.reject()
+                    
+                    # 원본 다이얼로그 다시 표시
+                    original_dialog.show()
+                    original_dialog.raise_()  # 창을 맨 앞으로
+                    original_dialog.activateWindow()  # 활성화
+                else:
+                    print("⚠️ 원본 다이얼로그 참조를 찾을 수 없음, 새로 생성")
+                    # 폴백: 새로운 다이얼로그 생성
+                    self.reject()
+                    from decision_dialog import ModelDecisionDialog
+                    if hasattr(self.parent(), 'capacity_finder'):
+                        decision_data = self.parent().capacity_finder.create_decision_list()
+                        if decision_data:
+                            dialog = ModelDecisionDialog(decision_data, self.current_path, "size", self.parent())
+                            dialog.exec_()
+                return
+        
+        # 일반적인 경우: 그냥 닫기
+        print("ℹ️ 네비게이션 컨텍스트 없음, 일반 종료")
+        self.reject() 

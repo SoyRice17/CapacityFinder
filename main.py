@@ -131,6 +131,13 @@ class CapacityFinder:
         # 날짜 패턴 정의 (2025-06-26T15_09_46+09_00 형식)
         self.date_pattern = re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}_\d{2}_\d{2}[+-]\d{2}_\d{2}')
         
+        # === 도구 간 간단한 네비게이션 컨텍스트 ===
+        self.navigation_context = {
+            'selected_user': None,        # 현재 선택된 사용자
+            'source_tool': None,          # 출발점 도구
+            'return_callback': None,      # 돌아갈 때 호출할 콜백
+        }
+        
     def format_file_size(self, size_mb):
         """파일 사이즈를 적절한 단위(MB/GB)로 포맷팅하는 함수"""
         if size_mb >= 1024:  # 1GB 이상

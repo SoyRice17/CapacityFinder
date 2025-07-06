@@ -182,6 +182,78 @@ class ModelDecisionDialog(QDialog):
         button_layout.addWidget(self.skip_button)
         layout.addLayout(button_layout)
         
+        # === 도구 간 이동 버튼들 ===
+        tools_label = QLabel("🔧 이 모델을 다른 도구로 분석하기:")
+        tools_label.setStyleSheet("font-weight: bold; color: #34495e; font-size: 12px; margin-top: 10px;")
+        layout.addWidget(tools_label)
+        
+        tools_layout = QHBoxLayout()
+        tools_layout.setSpacing(8)
+        
+        # 현재 모델 정확한 선별 버튼
+        self.accurate_selection_button = QPushButton("🎯 정확한 선별")
+        self.accurate_selection_button.clicked.connect(self.open_current_model_accurate_selection)
+        self.accurate_selection_button.setMinimumHeight(30)
+        self.accurate_selection_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                font-size: 10px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+        """)
+        
+        # 현재 모델 비주얼 선별 버튼
+        self.visual_selection_button = QPushButton("🖼️ 비주얼 선별")
+        self.visual_selection_button.clicked.connect(self.open_current_model_visual_selection)
+        self.visual_selection_button.setMinimumHeight(30)
+        self.visual_selection_button.setStyleSheet("""
+            QPushButton {
+                background-color: #9b59b6;
+                color: white;
+                font-size: 10px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #8e44ad;
+            }
+        """)
+        
+        # 유저 사이트 비교 버튼
+        self.site_comparison_button = QPushButton("⚖️ 사이트 비교")
+        self.site_comparison_button.clicked.connect(self.open_site_comparison)
+        self.site_comparison_button.setMinimumHeight(30)
+        self.site_comparison_button.setStyleSheet("""
+            QPushButton {
+                background-color: #e67e22;
+                color: white;
+                font-size: 10px;
+                font-weight: bold;
+                border: none;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #d68910;
+            }
+        """)
+        
+        tools_layout.addWidget(self.accurate_selection_button)
+        tools_layout.addWidget(self.visual_selection_button)
+        tools_layout.addWidget(self.site_comparison_button)
+        tools_layout.addStretch()
+        
+        layout.addLayout(tools_layout)
+        
         # 네비게이션 버튼들
         nav_layout = QHBoxLayout()
         nav_layout.setSpacing(10)
@@ -750,6 +822,143 @@ class ModelDecisionDialog(QDialog):
             return f"{size_mb/1024:.2f} GB"
         else:
             return f"{size_mb:.2f} MB"
+            
+    def open_current_model_accurate_selection(self):
+        """현재 모델을 정확한 선별도우미로 열기"""
+        if self.current_index >= len(self.decision_data):
+            return
+            
+        current = self.decision_data[self.current_index]
+        username = current['username']
+        
+        # 네비게이션 컨텍스트 설정 (원본 다이얼로그 참조 포함)
+        if hasattr(self.parent(), 'capacity_finder'):
+            capacity_finder = self.parent().capacity_finder
+            capacity_finder.navigation_context = {
+                'selected_user': username,
+                'source_tool': 'decision_dialog',
+                'return_callback': self.return_from_tool,
+                'original_dialog': self  # 원본 다이얼로그 참조 저장
+            }
+            
+            # 현재 다이얼로그 숨기기
+            self.hide()
+            
+            # 정확한 선별도우미 열기
+            from accurate_selection_dialog import AccurateSelectionDialog
+            dialog = AccurateSelectionDialog(capacity_finder, self.current_path, self.parent())
+            
+            # 특정 사용자로 미리 설정
+            if hasattr(dialog, 'user_combo'):
+                index = dialog.user_combo.findText(username)
+                if index >= 0:
+                    dialog.user_combo.setCurrentIndex(index)
+                    
+            if dialog.exec_() == QDialog.Accepted:
+                # 결과 처리
+                result = dialog.get_result()
+                if result:
+                    self.parent().process_accurate_selection_result(result)
+            
+            # 원래 다이얼로그 다시 표시
+            self.show()
+            
+            # 네비게이션 컨텍스트 정리
+            self.cleanup_navigation_context()
+            
+    def open_current_model_visual_selection(self):
+        """현재 모델을 비주얼 선별도우미로 열기"""
+        if self.current_index >= len(self.decision_data):
+            return
+            
+        current = self.decision_data[self.current_index]
+        username = current['username']
+        
+        # 네비게이션 컨텍스트 설정 (원본 다이얼로그 참조 포함)
+        if hasattr(self.parent(), 'capacity_finder'):
+            capacity_finder = self.parent().capacity_finder
+            capacity_finder.navigation_context = {
+                'selected_user': username,
+                'source_tool': 'decision_dialog',
+                'return_callback': self.return_from_tool,
+                'original_dialog': self  # 원본 다이얼로그 참조 저장
+            }
+            
+            # 현재 다이얼로그 숨기기
+            self.hide()
+            
+            # 비주얼 선별도우미 열기
+            from visual_selection_dialog import VisualSelectionDialog
+            dialog = VisualSelectionDialog(capacity_finder, self.current_path, self.parent())
+            
+            # 특정 사용자로 미리 설정
+            if hasattr(dialog, 'user_combo'):
+                index = dialog.user_combo.findText(username)
+                if index >= 0:
+                    dialog.user_combo.setCurrentIndex(index)
+                    # 자동으로 파일 로드 시도
+                    if hasattr(dialog, 'load_files'):
+                        dialog.load_files()
+                        
+            if dialog.exec_() == QDialog.Accepted:
+                # 결과 처리
+                result = dialog.get_result()
+                if result:
+                    self.parent().process_visual_selection_result(result)
+            
+            # 원래 다이얼로그 다시 표시
+            self.show()
+            
+            # 네비게이션 컨텍스트 정리
+            self.cleanup_navigation_context()
+            
+    def open_site_comparison(self):
+        """유저 사이트 비교 열기"""
+        # 네비게이션 컨텍스트 설정 (원본 다이얼로그 참조 포함)
+        if hasattr(self.parent(), 'capacity_finder'):
+            capacity_finder = self.parent().capacity_finder
+            capacity_finder.navigation_context = {
+                'selected_user': None,
+                'source_tool': 'decision_dialog',
+                'return_callback': self.return_from_tool,
+                'original_dialog': self  # 원본 다이얼로그 참조 저장
+            }
+            
+            # 현재 다이얼로그 숨기기
+            self.hide()
+            
+            # 유저 사이트 비교 열기
+            from user_site_comparison_dialog import UserSiteComparisonDialog
+            dialog = UserSiteComparisonDialog(capacity_finder, self.current_path, self.parent())
+                        
+            if dialog.exec_() == QDialog.Accepted:
+                # 결과 처리
+                result = dialog.get_result()
+                if result:
+                    self.parent().process_site_comparison_result(result)
+            
+            # 원래 다이얼로그 다시 표시
+            self.show()
+            
+            # 네비게이션 컨텍스트 정리
+            self.cleanup_navigation_context()
+            
+    def return_from_tool(self):
+        """다른 도구에서 돌아왔을 때 호출되는 콜백"""
+        # 현재 모델 정보를 다시 업데이트 (파일이 변경되었을 수도 있음)
+        if hasattr(self.parent(), 'capacity_finder'):
+            # 부모 윈도우의 데이터를 새로고침하도록 요청
+            if hasattr(self.parent(), 'on_path_confirmed') and self.current_path:
+                self.parent().on_path_confirmed(self.current_path)
+                
+    def cleanup_navigation_context(self):
+        """네비게이션 컨텍스트 정리"""
+        try:
+            if hasattr(self.parent(), 'capacity_finder') and hasattr(self.parent().capacity_finder, 'navigation_context'):
+                print("🧹 네비게이션 컨텍스트 정리")
+                self.parent().capacity_finder.navigation_context = {}
+        except Exception as e:
+            print(f"⚠️ 네비게이션 컨텍스트 정리 중 오류: {e}")
 
 
 class SortSelectionDialog(QDialog):
