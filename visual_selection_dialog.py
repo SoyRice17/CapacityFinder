@@ -4,6 +4,7 @@ import json
 import math
 import time
 import shutil
+import logging
 from datetime import datetime
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QComboBox, QPushButton, QScrollArea, QWidget,
@@ -13,6 +14,9 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer, QThread, pyqtSlot, QSize
 from PyQt5.QtGui import QFont, QColor, QPixmap, QPainter, QPen, QBrush
 import subprocess
+
+# 로거 설정
+logger = logging.getLogger('visual_selection_dialog')
 
 # FFmpeg 관리자 import
 from ffmpeg_manager import FFmpegManager
@@ -36,13 +40,13 @@ class ThumbnailExtractorThread(QThread):
         
     def request_stop(self):
         """썸네일 추출 중단 요청"""
-        print("🛑 썸네일 추출 중단 요청됨")
+        logger.info("🛑 썸네일 추출 중단 요청됨")
         self.stop_requested = True
     
     def extend_timeout(self, additional_seconds):
         """타임아웃 연장"""
         self.timeout_extension += additional_seconds
-        print(f"⏱️ 타임아웃 {additional_seconds}초 연장됨 (총 연장: {self.timeout_extension}초)")
+        logger.info(f"⏱️ 타임아웃 {additional_seconds}초 연장됨 (총 연장: {self.timeout_extension}초)")
         
     def set_path(self, path):
         self.current_path = path
@@ -52,19 +56,19 @@ class ThumbnailExtractorThread(QThread):
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import time
         
-        print(f"🎬 배치 썸네일 추출 시작: {len(self.file_list)}개 파일")
+        logger.info(f"🎬 배치 썸네일 추출 시작: {len(self.file_list)}개 파일")
         
         # 디버깅: 파일 순서 확인
         for i, file_info in enumerate(self.file_list[:3]):  # 처음 3개만 출력
-            print(f"🔍 파일 순서 [{i+1}]: {file_info['name']}")
+            logger.debug(f"🔍 파일 순서 [{i+1}]: {file_info['name']}")
         if len(self.file_list) > 3:
-            print(f"🔍 ... 총 {len(self.file_list)}개 파일")
+            logger.debug(f"🔍 ... 총 {len(self.file_list)}개 파일")
         
         start_time = time.time()
         
         # 중단 요청 확인
         if self.stop_requested:
-            print("🛑 시작 전 중단 요청으로 작업 취소")
+            logger.warning("🛑 시작 전 중단 요청으로 작업 취소")
             return
         
         # 네트워크 드라이브 확인 및 적응적 스레드 수 결정
@@ -73,7 +77,7 @@ class ThumbnailExtractorThread(QThread):
         
         if is_network_path:
             max_workers = 1  # 네트워크 드라이브는 순차 처리
-            print("🌐 네트워크 드라이브 감지 - 순차 썸네일 생성 모드")
+            logger.info("🌐 네트워크 드라이브 감지 - 순차 썸네일 생성 모드")
         else:
             max_workers = min(3, len(self.file_list))  # 로컬은 최대 3개 동시 처리
         
@@ -83,7 +87,7 @@ class ThumbnailExtractorThread(QThread):
             for file_info in self.file_list:
                 # 중단 요청 확인 (작업 제출 단계)
                 if self.stop_requested:
-                    print(f"🛑 작업 제출 중 중단 요청됨. 제출된 작업: {len(future_to_file)}개")
+                    logger.warning(f"🛑 작업 제출 중 중단 요청됨. 제출된 작업: {len(future_to_file)}개")
                     break
                     
                 file_name = file_info['name'] 
@@ -95,10 +99,10 @@ class ThumbnailExtractorThread(QThread):
             
             # 제출된 작업이 없으면 종료
             if not future_to_file:
-                print("🛑 제출된 작업이 없거나 중단 요청으로 종료")
+                logger.warning("🛑 제출된 작업이 없거나 중단 요청으로 종료")
                 return
             
-            print(f"📋 총 {len(future_to_file)}개 작업 제출됨. 진행 상황 모니터링...")
+            logger.info(f"📋 총 {len(future_to_file)}개 작업 제출됨. 진행 상황 모니터링...")
             
             # 동적 타임아웃 계산 (네트워크 드라이브 고려)
             file_count = len(future_to_file)
@@ -117,12 +121,12 @@ class ThumbnailExtractorThread(QThread):
             dynamic_timeout = base_timeout + self.timeout_extension
             
             if is_network:
-                print(f"🌐 네트워크 모드: 타임아웃 {dynamic_timeout}초 ({dynamic_timeout//60}분)")
+                logger.info(f"🌐 네트워크 모드: 타임아웃 {dynamic_timeout}초 ({dynamic_timeout//60}분)")
             else:
-                print(f"💻 로컬 모드: 타임아웃 {dynamic_timeout}초 ({dynamic_timeout//60}분)")
+                logger.info(f"💻 로컬 모드: 타임아웃 {dynamic_timeout}초 ({dynamic_timeout//60}분)")
             
             if self.timeout_extension > 0:
-                print(f"   ⏱️ 연장 시간 포함: +{self.timeout_extension}초")
+                logger.info(f"   ⏱️ 연장 시간 포함: +{self.timeout_extension}초")
             
             # 결과 수집 및 발신 (간단한 방식)
             completed_count = 0
@@ -131,7 +135,7 @@ class ThumbnailExtractorThread(QThread):
                 for future in as_completed(future_to_file, timeout=dynamic_timeout):
                     # 중단 요청 확인 (결과 처리 단계)
                     if self.stop_requested:
-                        print(f"🛑 결과 처리 중 중단 요청됨. 완료된 작업: {completed_count}/{len(future_to_file)}")
+                        logger.warning(f"🛑 결과 처리 중 중단 요청됨. 완료된 작업: {completed_count}/{len(future_to_file)}")
                         # 남은 작업들을 취소하려 시도
                         for remaining_future in future_to_file:
                             if not remaining_future.done():
@@ -145,38 +149,38 @@ class ThumbnailExtractorThread(QThread):
                         
                         if thumbnail:
                             self.thumbnail_ready.emit(file_name, thumbnail)
-                            print(f"✅ [{completed_count}/{len(future_to_file)}] {file_name} 완료")
+                            logger.debug(f"✅ [{completed_count}/{len(future_to_file)}] {file_name} 완료")
                         else:
-                            print(f"❌ [{completed_count}/{len(future_to_file)}] {file_name} 실패")
+                            logger.warning(f"❌ [{completed_count}/{len(future_to_file)}] {file_name} 실패")
                             
                     except Exception as e:
                         completed_count += 1
-                        print(f"💥 [{completed_count}/{len(future_to_file)}] {file_name} 예외: {e}")
+                        logger.error(f"💥 [{completed_count}/{len(future_to_file)}] {file_name} 예외: {e}")
                         
                     # 진행률 업데이트 (10개마다)
                     if completed_count % 10 == 0:
                         progress = (completed_count / len(future_to_file)) * 100
                         elapsed = time.time() - start_time
                         eta = (elapsed / completed_count) * (len(future_to_file) - completed_count) if completed_count > 0 else 0
-                        print(f"📊 진행률: {progress:.1f}% ({completed_count}/{len(future_to_file)}), 예상 잔여시간: {eta:.0f}초")
+                        logger.info(f"📊 진행률: {progress:.1f}% ({completed_count}/{len(future_to_file)}), 예상 잔여시간: {eta:.0f}초")
                         
             except TimeoutError:
                 remaining_count = len(future_to_file) - completed_count
-                print(f"⏰ 배치 타임아웃 ({dynamic_timeout}초)")
-                print(f"📊 진행 상황: {completed_count}개 완료, {remaining_count}개 남음")
+                logger.warning(f"⏰ 배치 타임아웃 ({dynamic_timeout}초)")
+                logger.info(f"📊 진행 상황: {completed_count}개 완료, {remaining_count}개 남음")
                 
                 # 사용자에게 선택권 제공 (UI 스레드에서 처리됨)
                 self.handle_timeout_dialog(completed_count, remaining_count, future_to_file)
                 
                 # 타임아웃 후 남은 작업들을 무제한 대기로 계속 처리
-                print("🔄 타임아웃 후 남은 작업 무제한 대기로 계속 처리...")
+                logger.info("🔄 타임아웃 후 남은 작업 무제한 대기로 계속 처리...")
                 remaining_futures = [f for f in future_to_file if not f.done()]
                 
                 if remaining_futures and not self.stop_requested:
                     try:
                         for future in as_completed(remaining_futures, timeout=None):
                             if self.stop_requested:
-                                print(f"🛑 후속 처리 중 중단 요청됨")
+                                logger.warning(f"🛑 후속 처리 중 중단 요청됨")
                                 break
                                 
                             file_name = future_to_file[future]
@@ -186,21 +190,21 @@ class ThumbnailExtractorThread(QThread):
                                 
                                 if thumbnail:
                                     self.thumbnail_ready.emit(file_name, thumbnail)
-                                    print(f"✅ [후속 {completed_count}/{len(future_to_file)}] {file_name} 완료")
+                                    logger.debug(f"✅ [후속 {completed_count}/{len(future_to_file)}] {file_name} 완료")
                                 else:
-                                    print(f"❌ [후속 {completed_count}/{len(future_to_file)}] {file_name} 실패")
+                                    logger.warning(f"❌ [후속 {completed_count}/{len(future_to_file)}] {file_name} 실패")
                                     
                             except Exception as e:
                                 completed_count += 1
-                                print(f"💥 [후속 {completed_count}/{len(future_to_file)}] {file_name} 예외: {e}")
+                                logger.error(f"💥 [후속 {completed_count}/{len(future_to_file)}] {file_name} 예외: {e}")
                                 
                     except Exception as e:
-                        print(f"💥 후속 처리 중 예외: {e}")
+                        logger.error(f"💥 후속 처리 중 예외: {e}")
                         
-                print(f"🎯 타임아웃 후 최종 완료: {completed_count}/{len(future_to_file)}개")
+                logger.info(f"🎯 타임아웃 후 최종 완료: {completed_count}/{len(future_to_file)}개")
                         
             except Exception as e:
-                print(f"💥 배치 처리 중 예외: {e}")
+                logger.error(f"💥 배치 처리 중 예외: {e}")
                 # 예외 상황에서는 안전하게 취소
                 for future in future_to_file:
                     if not future.done():
@@ -208,10 +212,10 @@ class ThumbnailExtractorThread(QThread):
         
         elapsed_time = time.time() - start_time
         if self.stop_requested:
-            print(f"🛑 썸네일 추출 중단됨: {completed_count}개 완료, {elapsed_time:.1f}초 소요")
+            logger.warning(f"🛑 썸네일 추출 중단됨: {completed_count}개 완료, {elapsed_time:.1f}초 소요")
         else:
-            print(f"🎯 배치 추출 완료: {len(self.file_list)}개 파일, {elapsed_time:.1f}초 소요")
-            print(f"   ⚡ 평균 속도: {len(self.file_list)/elapsed_time:.1f}개/초")
+            logger.info(f"🎯 배치 추출 완료: {len(self.file_list)}개 파일, {elapsed_time:.1f}초 소요")
+            logger.info(f"   ⚡ 평균 속도: {len(self.file_list)/elapsed_time:.1f}개/초")
 
     def handle_timeout_dialog(self, completed_count, remaining_count, future_to_file):
         """타임아웃 발생시 사용자 선택 다이얼로그"""
@@ -232,17 +236,17 @@ class ThumbnailExtractorThread(QThread):
                                       capture_output=True, text=True, timeout=5)
                 if 'h264_nvenc' in result.stdout:
                     self._hw_accel = 'nvenc'
-                    print("🚀 NVIDIA GPU 가속 감지!")
+                    logger.info("🚀 NVIDIA GPU 가속 감지!")
                 elif 'h264_qsv' in result.stdout:
                     self._hw_accel = 'qsv'
-                    print("🚀 Intel QSV 가속 감지!")
+                    logger.info("🚀 Intel QSV 가속 감지!")
                 elif 'h264_amf' in result.stdout:
                     self._hw_accel = 'amf'
-                    print("🚀 AMD AMF 가속 감지!")
+                    logger.info("🚀 AMD AMF 가속 감지!")
                 else:
-                    print("⚡ CPU 모드 (하드웨어 가속 없음)")
+                    logger.info("⚡ CPU 모드 (하드웨어 가속 없음)")
             except:
-                print("⚡ CPU 모드 (가속 감지 실패)")
+                logger.info("⚡ CPU 모드 (가속 감지 실패)")
         return self._hw_accel
 
     def get_thumbnail_cache_path(self, video_path):

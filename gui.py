@@ -1,6 +1,7 @@
 import sys
 import os
 import subprocess
+import logging
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QTreeWidget, QTreeWidgetItem, QLineEdit, 
                              QPushButton, QLabel, QMessageBox, QComboBox, QSplitter,
@@ -16,9 +17,13 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 import json
 
+# 로거 설정
+logger = logging.getLogger('gui')
+
 class MainWindow(QMainWindow):
     def __init__(self, on_path_confirmed=None, path_history=None):
         super().__init__()
+        logger.info("MainWindow 초기화 시작")
         self.on_path_confirmed = on_path_confirmed  # 콜백 함수 저장
         self.path_history = path_history  # 경로 기록 관리자
         self.current_path = None  # 현재 경로 저장을 위해 추가
@@ -183,31 +188,41 @@ class MainWindow(QMainWindow):
         path_button_layout.addWidget(self.analysis_tools_button, 2)
         
         layout.addLayout(path_button_layout, 1)
+        
+        logger.info("MainWindow 초기화 완료")
 
     def open_path_dialog(self):
         """경로 선택 다이얼로그 열기"""
+        logger.info("경로 선택 다이얼로그 열기")
         dialog = PathSelectionDialog(self.path_history, self)
         
         if dialog.exec_() == PathSelectionDialog.Accepted:
             selected_path = dialog.get_selected_path()
             if selected_path:
+                logger.info(f"경로 선택됨: {selected_path}")
                 self.process_selected_path(selected_path)
+            else:
+                logger.debug("경로 선택 취소됨")
     
     def quick_rescan(self):
         """현재 경로 빠른 재탐색"""
+        logger.info(f"빠른 재탐색 시작: {self.current_path}")
         if self.current_path and self.on_path_confirmed:
             self.on_path_confirmed(self.current_path)
     
     def process_selected_path(self, path):
         """선택된 경로 처리"""
+        logger.info(f"선택된 경로 처리 시작: {path}")
         self.current_path = path
         self.path_label.setText(f"현재 경로: {path}")
         
         # 빠른 재탐색 버튼 활성화
         self.quick_rescan_button.setEnabled(True)
+        logger.debug("빠른 재탐색 버튼 활성화됨")
         
         # 메인 클래스로 값 전달 (콜백 함수 호출)
         if self.on_path_confirmed:
+            logger.info("경로 확인 콜백 함수 호출")
             self.on_path_confirmed(path)
 
     def set_capacity_finder(self, capacity_finder):
@@ -226,7 +241,9 @@ class MainWindow(QMainWindow):
 
     def open_model_decision_dialog(self):
         """모델 결정 다이얼로그 열기"""
+        logger.info("모델 결정 다이얼로그 열기 시도")
         if not self.capacity_finder or not self.capacity_finder.dic_files:
+            logger.warning("데이터 없음 - 경로 선택 및 분석 필요")
             QMessageBox.warning(self, "데이터 없음", "먼저 경로를 선택하고 파일을 분석해주세요.")
             return
         
@@ -234,21 +251,26 @@ class MainWindow(QMainWindow):
         decision_data = self.capacity_finder.create_decision_list()
         
         if not decision_data:
+            logger.warning("분석할 모델 데이터가 없음")
             QMessageBox.information(self, "데이터 없음", "분석할 모델 데이터가 없습니다.")
             return
+        
+        logger.info(f"결정 리스트 생성 완료: {len(decision_data)}개 사용자")
         
         # 정렬 방식 선택 다이얼로그
         sort_dialog = SortSelectionDialog(self)
         if sort_dialog.exec_() != QDialog.Accepted:
+            logger.debug("정렬 방식 선택 취소됨")
             return  # 취소 시 종료
         
         sort_method = sort_dialog.get_sort_method()
-        print(f"📊 선택된 정렬 방식: {sort_method}")
+        logger.info(f"📊 선택된 정렬 방식: {sort_method}")
         
         # 팝업 다이얼로그 열기 (정렬 방식 전달)
         dialog = ModelDecisionDialog(decision_data, self.current_path, sort_method, self)
         if dialog.exec_() == QDialog.Accepted:
             decisions, total_savings = dialog.get_decisions()
+            logger.info(f"사용자 결정 완료: {len(decisions)}개 결정, 총 절약: {total_savings:.2f}MB")
             self.process_deletion_decisions(decisions, total_savings)
 
     def open_user_site_comparison_dialog(self):
@@ -343,13 +365,13 @@ class MainWindow(QMainWindow):
                 if os.path.exists(file_path):
                     os.remove(file_path)
                     deleted_count += 1
-                    print(f"삭제됨: {file_info['name']}")
+                    logger.info(f"삭제됨: {file_info['name']}")
                 else:
                     failed_count += 1
-                    print(f"파일 없음: {file_info['name']}")
+                    logger.warning(f"파일 없음: {file_info['name']}")
             except Exception as e:
                 failed_count += 1
-                print(f"삭제 실패: {file_info['name']}, 오류: {e}")
+                logger.error(f"삭제 실패: {file_info['name']}, 오류: {e}")
         
         # 결과 메시지
         result_msg = f"사용자 '{username}' 파일 정리 완료!\n\n"
@@ -409,13 +431,13 @@ class MainWindow(QMainWindow):
                 if os.path.exists(file_path):
                     os.remove(file_path)
                     deleted_count += 1
-                    print(f"삭제됨: {file_info['name']}")
+                    logger.info(f"삭제됨: {file_info['name']}")
                 else:
                     failed_count += 1
-                    print(f"파일 없음: {file_info['name']}")
+                    logger.warning(f"파일 없음: {file_info['name']}")
             except Exception as e:
                 failed_count += 1
-                print(f"삭제 실패: {file_info['name']}, 오류: {e}")
+                logger.error(f"삭제 실패: {file_info['name']}, 오류: {e}")
         
         # 결과 메시지
         result_msg = f"사용자 '{username}' 비주얼 선별 완료!\n\n"

@@ -5,3 +5,4 @@ config_local.py
 user_ratings.json
 ffmpeg_config.json
 ffmpeg_bundle/
+logs/

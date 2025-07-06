@@ -6,9 +6,45 @@ import sys
 import os
 import re
 import json
+import logging
 from datetime import datetime
 from enum import Enum
 from PyQt5.QtWidgets import QApplication
+
+# 로그 설정 함수
+def setup_logging():
+    """로그 설정을 초기화합니다."""
+    # 로그 디렉토리 생성
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    
+    # 로그 파일명 (날짜 포함)
+    log_filename = os.path.join(log_dir, f"capacity_finder_{datetime.now().strftime('%Y%m%d')}.log")
+    
+    # 로그 포맷 설정 (파일명, 함수명, 라인 번호 포함)
+    log_format = "%(asctime)s - %(levelname)s - [%(filename)s:%(funcName)s:%(lineno)d] - %(message)s"
+    
+    # 로그 설정 - 모든 레벨 출력 (DEBUG 포함)
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format=log_format,
+        handlers=[
+            logging.FileHandler(log_filename, encoding='utf-8'),  # 파일 출력
+            logging.StreamHandler()  # 콘솔 출력
+        ]
+    )
+    
+    # 로거 반환
+    return logging.getLogger(__name__)
+
+# 로그 설정 초기화
+logger = setup_logging()
+
+# 다른 파일에서도 사용할 수 있도록 로그 설정 함수 제공
+def get_logger(module_name):
+    """다른 모듈에서 로거를 가져올 때 사용"""
+    return logging.getLogger(module_name)
 
 class SiteType(Enum):
     """지원하는 성인 플랫폼 목록"""
@@ -50,13 +86,13 @@ class PathHistory:
             if os.path.exists(self.config_file):
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    print(f"경로 기록 로드됨: {len(data.get('paths', []))}개 경로")
+                    logger.info(f"경로 기록 로드됨: {len(data.get('paths', []))}개 경로")
                     return data
             else:
-                print("경로 기록 파일이 없음, 새로 생성")
+                logger.info("경로 기록 파일이 없음, 새로 생성")
                 return {"paths": [], "last_updated": None}
         except Exception as e:
-            print(f"경로 기록 로드 오류: {e}")
+            logger.error(f"경로 기록 로드 오류: {e}")
             return {"paths": [], "last_updated": None}
     
     def save_history(self):
@@ -65,9 +101,9 @@ class PathHistory:
             self.history["last_updated"] = datetime.now().isoformat()
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
-            print(f"경로 기록 저장됨: {self.config_file}")
+            logger.info(f"경로 기록 저장됨: {self.config_file}")
         except Exception as e:
-            print(f"경로 기록 저장 오류: {e}")
+            logger.error(f"경로 기록 저장 오류: {e}")
     
     def add_path(self, path):
         """새로운 경로를 기록에 추가"""
@@ -88,7 +124,7 @@ class PathHistory:
             # 기존 경로 업데이트 (마지막 사용 시간, 사용 횟수 증가)
             existing_path["last_used"] = datetime.now().isoformat()
             existing_path["usage_count"] = existing_path.get("usage_count", 0) + 1
-            print(f"기존 경로 업데이트: {abs_path} (사용 횟수: {existing_path['usage_count']})")
+            logger.info(f"기존 경로 업데이트: {abs_path} (사용 횟수: {existing_path['usage_count']})")
         else:
             # 새 경로 추가
             new_path_info = {
@@ -99,7 +135,7 @@ class PathHistory:
                 "usage_count": 1
             }
             self.history["paths"].append(new_path_info)
-            print(f"새 경로 추가: {abs_path}")
+            logger.info(f"새 경로 추가: {abs_path}")
         
         # 사용 횟수와 최근 사용 시간 기준으로 정렬
         self.history["paths"].sort(key=lambda x: (x.get("usage_count", 0), x.get("last_used", "")), reverse=True)
@@ -120,7 +156,7 @@ class PathHistory:
         abs_path = os.path.abspath(path)
         self.history["paths"] = [item for item in self.history["paths"] if item["path"] != abs_path]
         self.save_history()
-        print(f"경로 제거됨: {abs_path}")
+        logger.info(f"경로 제거됨: {abs_path}")
 
 class CapacityFinder:
     def __init__(self):
@@ -138,6 +174,8 @@ class CapacityFinder:
             'return_callback': None,      # 돌아갈 때 호출할 콜백
         }
         
+        logger.info("CapacityFinder 초기화 완료")
+        
     def format_file_size(self, size_mb):
         """파일 사이즈를 적절한 단위(MB/GB)로 포맷팅하는 함수"""
         if size_mb >= 1024:  # 1GB 이상
@@ -148,18 +186,25 @@ class CapacityFinder:
         
     def handle_path_confirmation(self, path):
         """GUI에서 경로가 확인되었을 때 호출되는 함수"""
-        print(f"메인에서 받은 경로: {path}")
+        import time
+        start_time = time.time()
+        logger.info(f"경로 확인됨: {path}")
+        logger.info(f"📊 경로 로딩 시작: {path}")
+        
         self.current_path = path
         
         # 경로를 기록에 추가 (JSON에 자동 저장)
         if self.path_history.add_path(path):
-            print(f"경로가 기록에 저장됨: {path}")
+            logger.info(f"경로가 기록에 저장됨: {path}")
         
         # 기존 데이터 초기화
         self.dic_files = {}
         
         # 파일 용량 계산
+        logger.debug("파일 목록 및 용량 계산 시작")
         result_dict = self.listing_files()
+        files_processed_time = time.time()
+        logger.info(f"⏱️ 파일 처리 완료: {files_processed_time - start_time:.2f}초")
         
         if result_dict:
             # GUI 리스트 초기화
@@ -173,6 +218,8 @@ class CapacityFinder:
             total_files_count = sum(len(user_data['files']) for _, user_data in sorted_users)
             formatted_total_size = self.format_file_size(total_files_size)
             
+            logger.info(f"파일 분석 완료 - 총 {len(sorted_users)}명 사용자, 총 용량: {formatted_total_size}, 총 파일: {total_files_count}개")
+            
             # 결과를 GUI에 표시 (헤더를 각 열에 맞춰 표시)
             self.window.add_header_with_totals("사용자별 파일 용량 (용량 큰 순)", formatted_total_size, total_files_count)
             for username, user_data in sorted_users:
@@ -183,14 +230,25 @@ class CapacityFinder:
                 # 새로운 트리 구조로 사용자 데이터 추가
                 self.window.add_user_data(username, user_data, formatted_size)
                 
-                print(f"사용자: {username}, 총 용량: {formatted_size}, 파일 수: {file_count}")
+                logger.debug(f"사용자: {username}, 총 용량: {formatted_size}, 파일 수: {file_count}")
             
             # CapacityFinder 인스턴스를 GUI에 설정하고 모델 정리 버튼 활성화
             self.window.set_capacity_finder(self)
             self.window.update_cleanup_button_state()
+            
+            # 전체 로딩 완료 시간 측정
+            total_time = time.time() - start_time
+            logger.info(f"🎯 전체 경로 로딩 완료: {total_time:.2f}초")
+            logger.info(f"   📊 파일 처리: {files_processed_time - start_time:.2f}초")
+            logger.info(f"   🖥️ GUI 표시: {total_time - (files_processed_time - start_time):.2f}초")
         else:
+            logger.warning("처리할 파일이 없습니다.")
             self.window.add_result_to_list("처리할 파일이 없습니다.")
             self.window.update_cleanup_button_state()
+            
+            # 빈 결과 처리 시간도 측정
+            total_time = time.time() - start_time
+            logger.info(f"🎯 경로 로딩 완료 (빈 결과): {total_time:.2f}초")
         
     def listing_files_capacity(self) -> list:
         """파일 용량을 계산하는 함수"""
@@ -204,21 +262,29 @@ class CapacityFinder:
                         # 리스트에 파일명, 파일크기 저장 MB 단위
                         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                         list_files.append([file, file_size_mb])
+                logger.info(f"파일 목록 읽기 완료: {len(list_files)}개 파일")
                 return list_files
             except Exception as e:
-                print(f"파일 목록 읽기 오류: {e}")
+                logger.error(f"파일 목록 읽기 오류: {e}")
                 return []
         else:
-            print("경로가 설정되지 않았습니다.")
+            logger.warning("경로가 설정되지 않았습니다.")
             return []
     
     def listing_files(self):
         """파일 목록을 가져와서 사용자별로 용량을 계산하는 함수"""
+        import time
+        start_time = time.time()
+        
         file_list = self.listing_files_capacity()
         
         if not file_list:
             return {}
-            
+        
+        parsing_start = time.time()
+        logger.debug(f"파일명 파싱 시작: {len(file_list)}개 파일")
+        
+        parsed_count = 0
         for file_info in file_list:
             file_name = file_info[0]
             file_size = file_info[1]
@@ -230,8 +296,19 @@ class CapacityFinder:
                     self.dic_files[username] = {'total_size': 0.0, 'files': []}
                 self.dic_files[username]['total_size'] += file_size
                 self.dic_files[username]['files'].append({'name': file_name, 'size': file_size})
+                parsed_count += 1
             else:
-                print(f"파일명 처리 불가: {file_name}")
+                logger.warning(f"파일명 처리 불가: {file_name}")
+        
+        parsing_time = time.time() - parsing_start
+        total_time = time.time() - start_time
+        
+        logger.info(f"⚡ 파일 분석 완료:")
+        logger.info(f"   📁 총 파일: {len(file_list)}개")
+        logger.info(f"   👥 인식된 사용자: {len(self.dic_files)}명")
+        logger.info(f"   ✅ 성공적으로 파싱: {parsed_count}개")
+        logger.info(f"   ⏱️ 파싱 시간: {parsing_time:.3f}초")
+        logger.info(f"   ⏱️ 전체 시간: {total_time:.3f}초")
         
         return self.dic_files
 
@@ -253,7 +330,7 @@ class CapacityFinder:
             # 날짜 패턴 찾기
             date_match = self.date_pattern.search(name_without_ext)
             if not date_match:
-                print(f"날짜 패턴을 찾을 수 없음: {file_name}")
+                logger.warning(f"날짜 패턴을 찾을 수 없음: {file_name}")
                 return None
             
             date_part = date_match.group()
@@ -266,7 +343,7 @@ class CapacityFinder:
             parts = before_date.split('-')
             
             if len(parts) < 2:
-                print(f"파일명 구조가 올바르지 않음: {file_name}")
+                logger.warning(f"파일명 구조가 올바르지 않음: {file_name}")
                 return None
             
             # 사이트 찾기
@@ -281,21 +358,21 @@ class CapacityFinder:
                     break
             
             if not site_part:
-                print(f"알려진 사이트를 찾을 수 없음: {file_name}")
+                logger.warning(f"알려진 사이트를 찾을 수 없음: {file_name}")
                 return None
             
             if not channel_parts:
-                print(f"채널명을 찾을 수 없음: {file_name}")
+                logger.warning(f"채널명을 찾을 수 없음: {file_name}")
                 return None
             
             # 채널명 결합 (여러 부분이 있을 경우 '-'로 다시 결합)
             channel_name = '-'.join(channel_parts)
             
-            print(f"파일명: {file_name} -> 사이트: {site_part}, 채널: {channel_name}, 날짜: {date_part}")
+            logger.debug(f"파일명 처리 완료: {file_name} -> 사이트: {site_part}, 채널: {channel_name}, 날짜: {date_part}")
             return channel_name
                     
         except Exception as e:
-            print(f"파일명 처리 중 오류: {file_name}, 에러: {e}")
+            logger.error(f"파일명 처리 중 오류: {file_name}, 에러: {e}")
             return None
 
     def extract_date_from_filename(self, file_name):
@@ -308,7 +385,7 @@ class CapacityFinder:
                 file_date = datetime.fromisoformat(date_str.replace('_', ':'))
                 return file_date
         except Exception as e:
-            print(f"날짜 추출 오류: {file_name}, 에러: {e}")
+            logger.error(f"날짜 추출 오류: {file_name}, 에러: {e}")
         return None
 
     def select_representative_samples(self, files):
@@ -359,7 +436,7 @@ class CapacityFinder:
     def create_decision_list(self):
         """결정하기 쉬운 형태로 정리"""
         if not self.dic_files:
-            print("분석할 데이터가 없습니다.")
+            logger.warning("분석할 데이터가 없습니다.")
             return []
         
         # 용량 큰 순으로 정렬
@@ -522,7 +599,7 @@ class CapacityFinder:
             return None, None
                     
         except Exception as e:
-            print(f"사이트/날짜 추출 중 오류: {file_name}, 에러: {e}")
+            logger.error(f"사이트/날짜 추출 중 오류: {file_name}, 에러: {e}")
             return None, None
 
     def get_available_users(self):
@@ -613,7 +690,7 @@ class CapacityFinder:
                 date_score = 0.5
         
         except Exception as e:
-            print(f"점수 계산 오류: {file_name}, 에러: {e}")
+            logger.error(f"점수 계산 오류: {file_name}, 에러: {e}")
             return 0.6  # 기본값을 0.6으로 상향
         
         # 가중 평균 계산 (시간 점수 제거, 다른 요소들 가중치 증가)
