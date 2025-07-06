@@ -9,6 +9,8 @@ import json
 import logging
 from datetime import datetime
 from enum import Enum
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 from PyQt5.QtWidgets import QApplication
 
 # 로그 설정 함수
@@ -250,20 +252,82 @@ class CapacityFinder:
             total_time = time.time() - start_time
             logger.info(f"🎯 경로 로딩 완료 (빈 결과): {total_time:.2f}초")
         
+    def get_file_size_info(self, file_path, file_name):
+        """단일 파일의 크기 정보를 가져오는 함수 (멀티스레딩용)"""
+        try:
+            if os.path.isfile(file_path):
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                return [file_name, file_size_mb]
+            return None
+        except Exception as e:
+            logger.error(f"파일 크기 가져오기 오류: {file_path}, 에러: {e}")
+            return None
+
     def listing_files_capacity(self) -> list:
-        """파일 용량을 계산하는 함수"""
+        """파일 용량을 계산하는 함수 (멀티스레딩 지원)"""
         list_files = []
         if self.current_path:
             try:
-                for file in os.listdir(self.current_path):
-                    file_path = os.path.join(self.current_path, file)
-                    # 파일인지 확인 (디렉토리 제외)
-                    if os.path.isfile(file_path):
-                        # 리스트에 파일명, 파일크기 저장 MB 단위
-                        file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                        list_files.append([file, file_size_mb])
-                logger.info(f"파일 목록 읽기 완료: {len(list_files)}개 파일")
+                import time
+                start_time = time.time()
+                
+                # 1. 파일 목록 가져오기
+                logger.info("📁 파일 목록 스캔 시작...")
+                all_files = os.listdir(self.current_path)
+                file_paths = [(os.path.join(self.current_path, file), file) for file in all_files]
+                
+                scan_time = time.time() - start_time
+                logger.info(f"📁 파일 목록 스캔 완료: {len(file_paths)}개 파일 발견 ({scan_time:.2f}초)")
+                
+                if not file_paths:
+                    return []
+                
+                # 2. 멀티스레딩으로 파일 크기 가져오기
+                logger.info("🚀 멀티스레딩 파일 크기 분석 시작...")
+                size_start = time.time()
+                
+                # 네트워크 환경을 고려하여 스레드 수 조정 (너무 많으면 오히려 느려질 수 있음)
+                max_workers = min(20, len(file_paths))  # 최대 20개 스레드
+                
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    # 각 파일의 크기를 병렬로 가져오기
+                    future_to_file = {
+                        executor.submit(self.get_file_size_info, file_path, file_name): file_name
+                        for file_path, file_name in file_paths
+                    }
+                    
+                    completed_count = 0
+                    log_interval = max(1, len(file_paths) // 10)  # 10% 간격으로 로그
+                    
+                    for future in as_completed(future_to_file):
+                        file_name = future_to_file[future]
+                        try:
+                            result = future.result()
+                            if result is not None:
+                                list_files.append(result)
+                            
+                            completed_count += 1
+                            
+                            # 진행 상황 로그 (10% 간격)
+                            if completed_count % log_interval == 0 or completed_count == len(file_paths):
+                                progress = (completed_count / len(file_paths)) * 100
+                                elapsed = time.time() - size_start
+                                logger.info(f"⚡ 진행률: {progress:.1f}% ({completed_count}/{len(file_paths)}) - {elapsed:.1f}초")
+                        
+                        except Exception as e:
+                            logger.error(f"파일 크기 가져오기 실패: {file_name}, 에러: {e}")
+                
+                total_time = time.time() - start_time
+                size_time = time.time() - size_start
+                
+                logger.info(f"✅ 파일 목록 읽기 완료: {len(list_files)}개 파일")
+                logger.info(f"   📊 총 소요 시간: {total_time:.2f}초")
+                logger.info(f"   📁 파일 스캔: {scan_time:.2f}초")
+                logger.info(f"   🚀 크기 분석: {size_time:.2f}초")
+                logger.info(f"   ⚡ 속도 향상: {max_workers}개 스레드 사용")
+                
                 return list_files
+                
             except Exception as e:
                 logger.error(f"파일 목록 읽기 오류: {e}")
                 return []
@@ -271,8 +335,27 @@ class CapacityFinder:
             logger.warning("경로가 설정되지 않았습니다.")
             return []
     
+    def process_file_name(self, file_info):
+        """단일 파일의 이름을 처리하는 함수 (멀티스레딩용)"""
+        file_name = file_info[0]
+        file_size = file_info[1]
+        
+        username = self.file_name_handle(file_name)
+        if username:
+            return {
+                'username': username,
+                'file_name': file_name,
+                'file_size': file_size,
+                'success': True
+            }
+        else:
+            return {
+                'file_name': file_name,
+                'success': False
+            }
+
     def listing_files(self):
-        """파일 목록을 가져와서 사용자별로 용량을 계산하는 함수"""
+        """파일 목록을 가져와서 사용자별로 용량을 계산하는 함수 (멀티스레딩 지원)"""
         import time
         start_time = time.time()
         
@@ -282,33 +365,90 @@ class CapacityFinder:
             return {}
         
         parsing_start = time.time()
-        logger.debug(f"파일명 파싱 시작: {len(file_list)}개 파일")
+        logger.info(f"🔍 파일명 파싱 시작: {len(file_list)}개 파일")
         
         parsed_count = 0
-        for file_info in file_list:
-            file_name = file_info[0]
-            file_size = file_info[1]
+        failed_files = []
+        
+        # 파일 수가 많을 때만 멀티스레딩 사용 (적을 때는 오버헤드가 더 클 수 있음)
+        if len(file_list) > 100:
+            # 멀티스레딩으로 파일명 처리
+            max_workers = min(10, len(file_list))  # 파일명 처리는 CPU 작업이라 스레드 수 제한
             
-            username = self.file_name_handle(file_name)
-            if username:
-                # 사용자별 용량 누적
-                if username not in self.dic_files:
-                    self.dic_files[username] = {'total_size': 0.0, 'files': []}
-                self.dic_files[username]['total_size'] += file_size
-                self.dic_files[username]['files'].append({'name': file_name, 'size': file_size})
-                parsed_count += 1
-            else:
-                logger.warning(f"파일명 처리 불가: {file_name}")
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_file = {
+                    executor.submit(self.process_file_name, file_info): file_info
+                    for file_info in file_list
+                }
+                
+                completed_count = 0
+                log_interval = max(1, len(file_list) // 10)  # 10% 간격으로 로그
+                
+                for future in as_completed(future_to_file):
+                    file_info = future_to_file[future]
+                    try:
+                        result = future.result()
+                        
+                        if result['success']:
+                            username = result['username']
+                            file_name = result['file_name']
+                            file_size = result['file_size']
+                            
+                            # 사용자별 용량 누적
+                            if username not in self.dic_files:
+                                self.dic_files[username] = {'total_size': 0.0, 'files': []}
+                            self.dic_files[username]['total_size'] += file_size
+                            self.dic_files[username]['files'].append({'name': file_name, 'size': file_size})
+                            parsed_count += 1
+                        else:
+                            failed_files.append(result['file_name'])
+                        
+                        completed_count += 1
+                        
+                        # 진행 상황 로그
+                        if completed_count % log_interval == 0 or completed_count == len(file_list):
+                            progress = (completed_count / len(file_list)) * 100
+                            elapsed = time.time() - parsing_start
+                            logger.info(f"🔍 파싱 진행률: {progress:.1f}% ({completed_count}/{len(file_list)}) - {elapsed:.1f}초")
+                    
+                    except Exception as e:
+                        logger.error(f"파일명 처리 실패: {file_info[0]}, 에러: {e}")
+                        failed_files.append(file_info[0])
+        
+        else:
+            # 단일스레드로 파일명 처리 (파일 수가 적을 때)
+            logger.info("📝 단일스레드 파일명 처리 (파일 수가 적음)")
+            for file_info in file_list:
+                file_name = file_info[0]
+                file_size = file_info[1]
+                
+                username = self.file_name_handle(file_name)
+                if username:
+                    # 사용자별 용량 누적
+                    if username not in self.dic_files:
+                        self.dic_files[username] = {'total_size': 0.0, 'files': []}
+                    self.dic_files[username]['total_size'] += file_size
+                    self.dic_files[username]['files'].append({'name': file_name, 'size': file_size})
+                    parsed_count += 1
+                else:
+                    failed_files.append(file_name)
         
         parsing_time = time.time() - parsing_start
         total_time = time.time() - start_time
         
-        logger.info(f"⚡ 파일 분석 완료:")
+        logger.info(f"✅ 파일 분석 완료:")
         logger.info(f"   📁 총 파일: {len(file_list)}개")
         logger.info(f"   👥 인식된 사용자: {len(self.dic_files)}명")
         logger.info(f"   ✅ 성공적으로 파싱: {parsed_count}개")
+        logger.info(f"   ❌ 파싱 실패: {len(failed_files)}개")
         logger.info(f"   ⏱️ 파싱 시간: {parsing_time:.3f}초")
         logger.info(f"   ⏱️ 전체 시간: {total_time:.3f}초")
+        
+        # 실패한 파일들 로그 (너무 많지 않을 때만)
+        if failed_files and len(failed_files) <= 10:
+            logger.warning(f"파싱 실패한 파일들: {failed_files}")
+        elif failed_files:
+            logger.warning(f"파싱 실패한 파일 {len(failed_files)}개 (일부): {failed_files[:5]}...")
         
         return self.dic_files
 
