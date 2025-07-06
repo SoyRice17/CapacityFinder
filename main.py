@@ -48,6 +48,278 @@ def get_logger(module_name):
     """다른 모듈에서 로거를 가져올 때 사용"""
     return logging.getLogger(module_name)
 
+class IntelligentCurationSystem:
+    """지능형 큐레이션 시스템 - 레이팅 데이터와 파일 점수를 결합한 판단 시스템"""
+    
+    def __init__(self, ratings_file="user_ratings.json"):
+        self.ratings_file = ratings_file
+        self.ratings_data = self.load_ratings()
+        self.keyword_weights = self.load_keyword_weights()
+        logger.info("🧠 지능형 큐레이션 시스템 초기화 완료 (다양성 유지 점수 시스템 적용)")
+    
+    def load_ratings(self):
+        """레이팅 데이터 로드"""
+        try:
+            if os.path.exists(self.ratings_file):
+                with open(self.ratings_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return data.get('ratings', {})
+            return {}
+        except Exception as e:
+            logger.error(f"레이팅 로드 오류: {e}")
+            return {}
+    
+    def load_keyword_weights(self):
+        """키워드 가중치를 파일에서 로드하거나 기본값 사용"""
+        try:
+            # 저장된 키워드 파일 확인
+            if os.path.exists('keyword_weights.json'):
+                with open('keyword_weights.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    keywords = data.get('keywords', {})
+                    if keywords:
+                        logger.info(f"키워드 가중치 파일 로드: {len(keywords)}개 키워드")
+                        return keywords
+        except Exception as e:
+            logger.error(f"키워드 가중치 로드 오류: {e}")
+        
+        # 기본값 사용
+        logger.info("기본 키워드 가중치 사용")
+        return self.get_default_keyword_weights()
+    
+    def get_default_keyword_weights(self):
+        """기본 키워드 가중치 시스템 구축 - 다양성 유지 버전"""
+        return {
+            # 긍정적 키워드 (유지 선호) - 적당한 범위로 조정
+            'ㅅㅌㅊ': 0.8,         # 1.2 → 0.8
+            'ㅆㅅㅌㅊ': 0.9,        # 1.5 → 0.9
+            'ㅈㅅㅌㅊ': 0.7,        # 1.0 → 0.7
+            'ㅍㅅㅌㅊ': 0.6,        # 0.8 → 0.6
+            'GOAT': 0.9,          # 1.5 → 0.9
+            '신': 0.8,            # 1.3 → 0.8
+            '귀여움': 0.6,         # 1.0 → 0.6
+            '올노': 0.5,          # 0.9 → 0.5
+            '자위': 0.4,          # 0.7 → 0.4
+            
+            # 부정적 키워드 (삭제 선호) - 적당한 범위로 조정
+            '가지치기필요': -0.8,    # -1.5 → -0.8
+            '녹화중지': -0.6,       # -1.0 → -0.6
+            '녹화중단': -0.6,       # -1.0 → -0.6
+            '추적중지': -0.7,       # -1.2 → -0.7
+            '현재': -0.4,          # -0.6 → -0.4
+            '애매함': -0.5,         # -0.8 → -0.5
+            '계륵': -0.7,          # -1.3 → -0.7
+            '정으로보는느낌': -0.6,   # -1.0 → -0.6
+            'ㅍㅌㅊ': -0.3,         # -0.5 → -0.3
+            
+            # 중립 키워드 (다양성 확대)
+            '얼굴': 0.1,
+            '육덕': 0.2,
+            '코스': 0.1,
+            '2인': 0.1,
+            '3인': 0.1,
+            '섹시': 0.3,
+            '예쁨': 0.2,
+            '몸매': 0.2,
+            '상냥': 0.3,
+            '츤데레': 0.2,
+        }
+    
+    def calculate_rating_score(self, username):
+        """사용자 레이팅 기반 점수 계산 (0.0 ~ 1.0) - 다양성 유지 시스템"""
+        if username not in self.ratings_data:
+            return 0.4  # 미평가 사용자 기본 점수 (0.2 → 0.4로 상향)
+        
+        rating_info = self.ratings_data[username]
+        base_rating = rating_info.get('rating', 0) / 5.0  # 0.0 ~ 1.0 정규화
+        comment = rating_info.get('comment', '').lower()
+        
+        # 키워드 가중치 적용 (범위 조정)
+        keyword_bonus = 0.0
+        for keyword, weight in self.keyword_weights.items():
+            if keyword in comment:
+                keyword_bonus += weight
+        
+        # 키워드 보너스 제한 조정 (-0.7 ~ +0.7)
+        keyword_bonus = max(-0.7, min(0.7, keyword_bonus))
+        
+        # 기본 점수 계산
+        raw_score = base_rating + keyword_bonus
+        raw_score = max(0.0, min(1.0, raw_score))
+        
+        # 다양성 보정 적용 (부드러운 곡선)
+        final_score = self._apply_diversity_adjustment(raw_score)
+        
+        return final_score
+    
+    def calculate_composite_score(self, username, file_info, user_files):
+        """복합 점수 계산: 파일 점수 + 레이팅 점수"""
+        # 기본 파일 점수 (0.0 ~ 1.0)
+        file_score = self.calculate_file_score_basic(file_info, user_files)
+        
+        # 레이팅 점수 (0.0 ~ 1.0)
+        rating_score = self.calculate_rating_score(username)
+        
+        # 가중 결합 (파일 점수 60%, 레이팅 점수 40%)
+        composite_score = (file_score * 0.6) + (rating_score * 0.4)
+        
+        return {
+            'composite_score': composite_score,
+            'file_score': file_score,
+            'rating_score': rating_score,
+            'username': username
+        }
+    
+    def calculate_file_score_basic(self, file_info, user_files):
+        """기본 파일 점수 계산 (다양성 유지 시스템)"""
+        file_name = file_info['name']
+        file_size = file_info['size']
+        
+        size_score = 0.0
+        rarity_score = 0.0
+        date_score = 0.0
+        
+        try:
+            # 파일 크기 점수 (적당한 곡선)
+            all_sizes = [f['size'] for f in user_files]
+            if all_sizes:
+                max_size = max(all_sizes)
+                min_size = min(all_sizes)
+                if max_size > min_size:
+                    normalized_score = (file_size - min_size) / (max_size - min_size)
+                    # 1.5제곱으로 적당한 곡선 유지
+                    size_score = normalized_score ** 1.5  # 너무 극단적이지 않게
+                else:
+                    size_score = 0.6  # 크기 차이 없으면 중상 점수
+            
+            # 희귀성 점수 (기본값 상향)
+            rarity_score = 0.5  # 기본값 (0.3 → 0.5로 상향)
+            
+            # 날짜 점수 (기본값 상향)
+            date_score = 0.4  # 기본값 (0.2 → 0.4로 상향)
+            
+        except Exception as e:
+            logger.error(f"파일 점수 계산 오류: {file_name}, 에러: {e}")
+            return 0.3  # 오류 시 기본값을 적당하게 (0.1 → 0.3)
+        
+        # 가중 평균 계산
+        raw_score = (size_score * 0.6 + rarity_score * 0.25 + date_score * 0.15)
+        
+        # 다양성 보정 적용
+        final_score = self._apply_diversity_adjustment(raw_score)
+        
+        return final_score
+    
+    def _apply_diversity_adjustment(self, score):
+        """다양성 유지 보정 함수 - 부드러운 곡선으로 0.01~0.99 범위에서 고르게 분포"""
+        import math
+        
+        # 시그모이드 곡선 적용으로 부드러운 분포 생성
+        # 입력 범위 [0,1]을 [-6,6] 범위로 변환
+        x = (score - 0.5) * 12  # -6 ~ +6 범위
+        
+        # 시그모이드 함수: 1 / (1 + e^(-x))
+        sigmoid = 1.0 / (1.0 + math.exp(-x))
+        
+        # 0.01 ~ 0.99 범위로 스케일링
+        adjusted = 0.01 + (sigmoid * 0.98)
+        
+        # 추가 미세 조정: 중간값 주변에서 더 넓은 분포
+        if 0.3 <= score <= 0.7:
+            # 중간 영역에서 약간의 랜덤성 추가 (파일명 해시 기반)
+            hash_factor = (hash(str(score)) % 100) / 1000.0  # -0.05 ~ +0.05
+            adjusted += hash_factor - 0.05
+        
+        return max(0.01, min(0.99, adjusted))
+    
+    def get_deletion_priority_list(self, capacity_finder):
+        """삭제 우선순위 리스트 생성"""
+        priority_list = []
+        
+        for username, user_data in capacity_finder.dic_files.items():
+            files_with_scores = []
+            
+            for file_info in user_data['files']:
+                score_data = self.calculate_composite_score(username, file_info, user_data['files'])
+                files_with_scores.append({
+                    'name': file_info['name'],
+                    'size': file_info['size'],
+                    'composite_score': score_data['composite_score'],
+                    'file_score': score_data['file_score'],
+                    'rating_score': score_data['rating_score'],
+                    'username': username
+                })
+            
+            # 점수 낮은 순 정렬 (삭제 우선순위)
+            files_with_scores.sort(key=lambda x: x['composite_score'])
+            
+            priority_list.extend(files_with_scores)
+        
+        return priority_list
+    
+    def get_auto_deletion_suggestions(self, capacity_finder, target_savings_gb=10):
+        """자동 삭제 추천 (목표 절약 용량 기준) - 다양성 유지 기준"""
+        priority_list = self.get_deletion_priority_list(capacity_finder)
+        target_savings_mb = target_savings_gb * 1024
+        
+        suggestions = []
+        current_savings = 0
+        
+        for file_data in priority_list:
+            if current_savings >= target_savings_mb:
+                break
+            
+            # 삭제 기준: 복합 점수 0.25 이하 (적당한 기준)
+            if file_data['composite_score'] <= 0.25:
+                suggestions.append(file_data)
+                current_savings += file_data['size']
+        
+        return {
+            'suggested_files': suggestions,
+            'total_savings_gb': current_savings / 1024,
+            'files_count': len(suggestions),
+            'criteria': 'composite_score <= 0.25'
+        }
+    
+    def get_user_cleanup_analysis(self, username):
+        """특정 사용자의 정리 분석"""
+        if username not in self.ratings_data:
+            return None
+        
+        rating_info = self.ratings_data[username]
+        rating = rating_info.get('rating', 0)
+        comment = rating_info.get('comment', '')
+        
+        # 정리 전략 결정
+        if rating <= 2:
+            strategy = "대부분 삭제 권장"
+            keep_ratio = 0.1  # 10%만 유지
+        elif rating == 3:
+            strategy = "선별적 삭제"
+            keep_ratio = 0.3  # 30% 유지
+        elif rating >= 4:
+            strategy = "보존 우선"
+            keep_ratio = 0.7  # 70% 유지
+        else:
+            strategy = "기본 정리"
+            keep_ratio = 0.5  # 50% 유지
+        
+        # 키워드 기반 조정
+        if '가지치기필요' in comment:
+            keep_ratio *= 0.5  # 더 많이 삭제
+        elif '녹화중지' in comment:
+            keep_ratio *= 0.3  # 대부분 삭제
+        elif 'ㅅㅌㅊ' in comment or 'GOAT' in comment:
+            keep_ratio = min(keep_ratio * 1.5, 0.9)  # 더 많이 보존
+        
+        return {
+            'username': username,
+            'rating': rating,
+            'strategy': strategy,
+            'keep_ratio': keep_ratio,
+            'comment': comment
+        }
+
 class SiteType(Enum):
     """지원하는 성인 플랫폼 목록"""
     CHATURBATE = "chaturbate"
@@ -176,7 +448,11 @@ class CapacityFinder:
             'return_callback': None,      # 돌아갈 때 호출할 콜백
         }
         
+        # === 지능형 큐레이션 시스템 추가 ===
+        self.intelligent_system = IntelligentCurationSystem()
+        
         logger.info("CapacityFinder 초기화 완료")
+        logger.info("🧠 지능형 큐레이션 시스템 연동 완료 (다양성 유지 점수 분포 시스템)")
         
     def format_file_size(self, size_mb):
         """파일 사이즈를 적절한 단위(MB/GB)로 포맷팅하는 함수"""
@@ -881,7 +1157,7 @@ class CapacityFinder:
         return files_with_scores
 
     def get_selection_candidates(self, username, top_n=50):
-        """선별 후보 파일들 반환 (상위 N개)
+        """선별 후보 파일들 반환 (상위 N개) - 지능형 복합점수 시스템 적용
         
         Args:
             username: 사용자명
@@ -898,19 +1174,259 @@ class CapacityFinder:
         if username not in self.dic_files:
             return None
         
-        all_files = self.get_user_files_with_scores(username)
-        total_files = len(all_files)
+        user_data = self.dic_files[username]
+        files = user_data['files']
+        
+        # 지능형 복합 점수를 사용한 파일 분석
+        files_with_scores = []
+        for file_info in files:
+            # 지능형 시스템의 복합 점수 계산 (파일점수 + 레이팅점수)
+            score_data = self.intelligent_system.calculate_composite_score(username, file_info, files)
+            files_with_scores.append({
+                'name': file_info['name'],
+                'size': file_info['size'],
+                'score': score_data['composite_score'],  # 복합 점수 사용
+                'file_score': score_data['file_score'],
+                'rating_score': score_data['rating_score'],
+                'rank': 0  # 나중에 설정
+            })
+        
+        # 복합 점수 기준으로 정렬 (높은 점수부터)
+        files_with_scores.sort(key=lambda x: x['score'], reverse=True)
+        
+        # 순위 설정
+        for i, file_info in enumerate(files_with_scores):
+            file_info['rank'] = i + 1
+        
+        total_files = len(files_with_scores)
         
         # 상위 N개를 후보로 선택
         top_n = min(top_n, total_files)
-        candidates = all_files[:top_n]
-        excluded = all_files[top_n:]
+        candidates = files_with_scores[:top_n]
+        excluded = files_with_scores[top_n:]
+        
+        logger.info(f"🎯 선별 후보 생성: {username} - 총 {total_files}개 중 상위 {top_n}개 선택 (지능형 복합점수 적용)")
         
         return {
             'candidates': candidates,
             'excluded': excluded,
             'total_files': total_files,
             'username': username
+        }
+    
+    # === 지능형 큐레이션 시스템 통합 메서드들 ===
+    
+    def get_intelligent_deletion_analysis(self, target_savings_gb=10):
+        """지능형 삭제 분석 - 레이팅 기반 자동 추천"""
+        logger.info(f"🧠 지능형 삭제 분석 시작 (목표: {target_savings_gb}GB 절약)")
+        
+        # 자동 삭제 추천
+        suggestions = self.intelligent_system.get_auto_deletion_suggestions(self, target_savings_gb)
+        
+        # 사용자별 정리 전략 분석
+        user_strategies = {}
+        for username in self.dic_files.keys():
+            strategy = self.intelligent_system.get_user_cleanup_analysis(username)
+            if strategy:
+                user_strategies[username] = strategy
+        
+        # 통계 계산
+        total_files = sum(len(data['files']) for data in self.dic_files.values())
+        suggested_count = suggestions['files_count']
+        suggested_savings = suggestions['total_savings_gb']
+        
+        analysis_result = {
+            'suggestions': suggestions,
+            'user_strategies': user_strategies,
+            'statistics': {
+                'total_files': total_files,
+                'suggested_files': suggested_count,
+                'suggested_savings_gb': suggested_savings,
+                'efficiency_ratio': suggested_count / total_files if total_files > 0 else 0
+            }
+        }
+        
+        logger.info(f"✅ 분석 완료: {suggested_count}개 파일, {suggested_savings:.2f}GB 절약 가능")
+        return analysis_result
+    
+    def get_user_intelligence_report(self, username):
+        """특정 사용자의 지능형 분석 리포트"""
+        if username not in self.dic_files:
+            return None
+        
+        user_data = self.dic_files[username]
+        files = user_data['files']
+        
+        # 각 파일의 복합 점수 계산
+        scored_files = []
+        for file_info in files:
+            score_data = self.intelligent_system.calculate_composite_score(username, file_info, files)
+            scored_files.append({
+                'name': file_info['name'],
+                'size': file_info['size'],
+                'composite_score': score_data['composite_score'],
+                'file_score': score_data['file_score'],
+                'rating_score': score_data['rating_score']
+            })
+        
+        # 점수별 정렬
+        scored_files.sort(key=lambda x: x['composite_score'], reverse=True)
+        
+        # 통계 계산 (다양성 유지 기준)
+        high_quality = [f for f in scored_files if f['composite_score'] >= 0.7]   # 0.8 → 0.7
+        medium_quality = [f for f in scored_files if 0.3 <= f['composite_score'] < 0.7]  # 0.2~0.8 → 0.3~0.7
+        low_quality = [f for f in scored_files if f['composite_score'] < 0.3]     # 0.2 → 0.3
+        
+        # 사용자 정리 전략
+        cleanup_strategy = self.intelligent_system.get_user_cleanup_analysis(username)
+        
+        return {
+            'username': username,
+            'files': scored_files,
+            'quality_breakdown': {
+                'high_quality': len(high_quality),
+                'medium_quality': len(medium_quality),
+                'low_quality': len(low_quality)
+            },
+            'cleanup_strategy': cleanup_strategy,
+            'total_size': user_data['total_size'],
+            'file_count': len(files)
+        }
+    
+    def get_priority_deletion_list(self, count_limit=100, balanced_mode=False):
+        """우선순위 기반 삭제 리스트 (전체 분석)
+        
+        Args:
+            count_limit: 표시할 파일 수
+            balanced_mode: 균등 분배 모드 (각 사용자별로 골고루 선택)
+        """
+        logger.info(f"🎯 우선순위 삭제 리스트 생성 (상위 {count_limit}개, 균등모드: {balanced_mode})")
+        
+        priority_list = self.intelligent_system.get_deletion_priority_list(self)
+        
+        if balanced_mode:
+            # 균등 분배 모드: 각 사용자별로 골고루 선택
+            top_priorities = self._get_balanced_priority_list(priority_list, count_limit)
+        else:
+            # 기본 모드: 점수 낮은 순으로 상위 N개
+            top_priorities = priority_list[:count_limit]
+        
+        # 사용자별 통계
+        user_stats = {}
+        for file_data in top_priorities:
+            username = file_data['username']
+            if username not in user_stats:
+                user_stats[username] = {'count': 0, 'size': 0}
+            user_stats[username]['count'] += 1
+            user_stats[username]['size'] += file_data['size']
+        
+        total_savings = sum(f['size'] for f in top_priorities)
+        
+        return {
+            'priority_files': top_priorities,
+            'user_breakdown': user_stats,
+            'total_savings_gb': total_savings / 1024,
+            'file_count': len(top_priorities),
+            'balanced_mode': balanced_mode
+        }
+    
+    def _get_balanced_priority_list(self, priority_list, count_limit):
+        """균등 분배 방식으로 우선순위 리스트 생성"""
+        # 사용자별로 파일 그룹화
+        user_files = {}
+        for file_data in priority_list:
+            username = file_data['username']
+            if username not in user_files:
+                user_files[username] = []
+            user_files[username].append(file_data)
+        
+        total_users = len(user_files)
+        if total_users == 0:
+            return []
+        
+        # 사용자별 기본 할당량 계산
+        base_per_user = max(1, count_limit // total_users)  # 최소 1개씩
+        remaining = count_limit - (base_per_user * total_users)
+        
+        balanced_list = []
+        user_counts = {}
+        
+        # 1단계: 각 사용자별로 기본 할당량만큼 선택
+        for username, files in user_files.items():
+            selected_count = min(base_per_user, len(files))
+            balanced_list.extend(files[:selected_count])
+            user_counts[username] = selected_count
+        
+        # 2단계: 남은 슬롯을 파일이 많은 사용자 순으로 배분
+        if remaining > 0:
+            # 사용자별 남은 파일 수 계산
+            remaining_files = []
+            for username, files in user_files.items():
+                used_count = user_counts[username]
+                if used_count < len(files):
+                    # (남은 파일 수, 사용자명, 파일 리스트)
+                    remaining_files.append((len(files) - used_count, username, files[used_count:]))
+            
+            # 남은 파일이 많은 사용자 순으로 정렬
+            remaining_files.sort(key=lambda x: x[0], reverse=True)
+            
+            # 남은 슬롯 배분
+            for remaining_count, username, files in remaining_files:
+                if remaining <= 0:
+                    break
+                
+                additional = min(remaining, remaining_count, 10)  # 한 사용자당 최대 10개 추가
+                balanced_list.extend(files[:additional])
+                remaining -= additional
+        
+        # 최종적으로 점수순으로 정렬
+        balanced_list.sort(key=lambda x: x['composite_score'])
+        
+        logger.info(f"균등 분배 완료: {len(balanced_list)}개 파일, {len(user_counts)}명 사용자")
+        
+        return balanced_list[:count_limit]
+    
+    def execute_intelligent_cleanup(self, analysis_result, confirm_callback=None):
+        """지능형 정리 실행"""
+        suggested_files = analysis_result['suggestions']['suggested_files']
+        
+        if not suggested_files:
+            logger.warning("삭제할 파일이 없습니다.")
+            return False
+        
+        # 확인 콜백이 있으면 호출
+        if confirm_callback:
+            if not confirm_callback(suggested_files):
+                logger.info("사용자가 지능형 정리를 취소했습니다.")
+                return False
+        
+        # 파일 삭제 실행
+        deleted_files = []
+        deleted_size = 0
+        
+        for file_data in suggested_files:
+            file_path = os.path.join(self.current_path, file_data['name'])
+            
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    deleted_files.append(file_data)
+                    deleted_size += file_data['size']
+                    logger.debug(f"삭제 완료: {file_data['name']}")
+                else:
+                    logger.warning(f"파일을 찾을 수 없음: {file_path}")
+            except Exception as e:
+                logger.error(f"파일 삭제 오류: {file_path}, 에러: {e}")
+        
+        # 삭제 결과 통계
+        deleted_size_gb = deleted_size / 1024
+        logger.info(f"🎯 지능형 정리 완료: {len(deleted_files)}개 파일, {deleted_size_gb:.2f}GB 절약")
+        
+        return {
+            'deleted_files': deleted_files,
+            'deleted_count': len(deleted_files),
+            'deleted_size_gb': deleted_size_gb,
+            'success': True
         }
 
 def main():

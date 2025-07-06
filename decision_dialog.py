@@ -190,24 +190,7 @@ class ModelDecisionDialog(QDialog):
         tools_layout = QHBoxLayout()
         tools_layout.setSpacing(8)
         
-        # 현재 모델 정확한 선별 버튼
-        self.accurate_selection_button = QPushButton("🎯 정확한 선별")
-        self.accurate_selection_button.clicked.connect(self.open_current_model_accurate_selection)
-        self.accurate_selection_button.setMinimumHeight(30)
-        self.accurate_selection_button.setStyleSheet("""
-            QPushButton {
-                background-color: #3498db;
-                color: white;
-                font-size: 10px;
-                font-weight: bold;
-                border: none;
-                border-radius: 4px;
-                padding: 5px;
-            }
-            QPushButton:hover {
-                background-color: #2980b9;
-            }
-        """)
+
         
         # 현재 모델 비주얼 선별 버튼
         self.visual_selection_button = QPushButton("🖼️ 비주얼 선별")
@@ -247,7 +230,6 @@ class ModelDecisionDialog(QDialog):
             }
         """)
         
-        tools_layout.addWidget(self.accurate_selection_button)
         tools_layout.addWidget(self.visual_selection_button)
         tools_layout.addWidget(self.site_comparison_button)
         tools_layout.addStretch()
@@ -823,48 +805,7 @@ class ModelDecisionDialog(QDialog):
         else:
             return f"{size_mb:.2f} MB"
             
-    def open_current_model_accurate_selection(self):
-        """현재 모델을 정확한 선별도우미로 열기"""
-        if self.current_index >= len(self.decision_data):
-            return
-            
-        current = self.decision_data[self.current_index]
-        username = current['username']
-        
-        # 네비게이션 컨텍스트 설정 (원본 다이얼로그 참조 포함)
-        if hasattr(self.parent(), 'capacity_finder'):
-            capacity_finder = self.parent().capacity_finder
-            capacity_finder.navigation_context = {
-                'selected_user': username,
-                'source_tool': 'decision_dialog',
-                'return_callback': self.return_from_tool,
-                'original_dialog': self  # 원본 다이얼로그 참조 저장
-            }
-            
-            # 현재 다이얼로그 숨기기
-            self.hide()
-            
-            # 정확한 선별도우미 열기
-            from accurate_selection_dialog import AccurateSelectionDialog
-            dialog = AccurateSelectionDialog(capacity_finder, self.current_path, self.parent())
-            
-            # 특정 사용자로 미리 설정
-            if hasattr(dialog, 'user_combo'):
-                index = dialog.user_combo.findText(username)
-                if index >= 0:
-                    dialog.user_combo.setCurrentIndex(index)
-                    
-            if dialog.exec_() == QDialog.Accepted:
-                # 결과 처리
-                result = dialog.get_result()
-                if result:
-                    self.parent().process_accurate_selection_result(result)
-            
-            # 원래 다이얼로그 다시 표시
-            self.show()
-            
-            # 네비게이션 컨텍스트 정리
-            self.cleanup_navigation_context()
+
             
     def open_current_model_visual_selection(self):
         """현재 모델을 비주얼 선별도우미로 열기"""

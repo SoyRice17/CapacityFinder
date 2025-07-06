@@ -9,16 +9,18 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from path_dialog import PathSelectionDialog
 from decision_dialog import ModelDecisionDialog, SortSelectionDialog
 from user_site_comparison_dialog import UserSiteComparisonDialog
-from accurate_selection_dialog import AccurateSelectionDialog
+
 from visual_selection_dialog import VisualSelectionDialog
 from video_timeline_dialog import VideoTimelineDialog
 from rating_dialog import RatingDialog
+from intelligent_cleanup_dialog import IntelligentCleanupDialog
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 import json
 
-# 로거 설정
-logger = logging.getLogger('gui')
+# 로거 설정 (순환 임포트 방지)
+import logging
+logger = logging.getLogger(__name__)
 
 class MainWindow(QMainWindow):
     def __init__(self, on_path_confirmed=None, path_history=None):
@@ -168,9 +170,7 @@ class MainWindow(QMainWindow):
         comparison_action.triggered.connect(self.open_user_site_comparison_dialog)
         self.analysis_menu.addAction(comparison_action)
         
-        accurate_action = QAction("🎯 정확한 선별도우미", self)
-        accurate_action.triggered.connect(self.open_accurate_selection_dialog)
-        self.analysis_menu.addAction(accurate_action)
+
         
         visual_action = QAction("🖼️ 비주얼 선별도우미", self)
         visual_action.triggered.connect(self.open_visual_selection_dialog)
@@ -179,6 +179,10 @@ class MainWindow(QMainWindow):
         timeline_action = QAction("🎬 영상 타임라인 뷰어", self)
         timeline_action.triggered.connect(self.open_video_timeline_dialog)
         self.analysis_menu.addAction(timeline_action)
+        
+        intelligent_cleanup_action = QAction("🧹 지능형 정리도우미", self)
+        intelligent_cleanup_action.triggered.connect(self.open_intelligent_cleanup_dialog)
+        self.analysis_menu.addAction(intelligent_cleanup_action)
         
         # 버튼에 메뉴 연결
         self.analysis_tools_button.setMenu(self.analysis_menu)
@@ -286,18 +290,7 @@ class MainWindow(QMainWindow):
             if result:
                 self.process_site_comparison_result(result)
 
-    def open_accurate_selection_dialog(self):
-        """정확한 선별도우미 다이얼로그 열기"""
-        if not self.capacity_finder or not self.capacity_finder.dic_files:
-            QMessageBox.warning(self, "데이터 없음", "먼저 경로를 선택하고 파일을 분석해주세요.")
-            return
-        
-        # 정확한 선별 다이얼로그 열기
-        dialog = AccurateSelectionDialog(self.capacity_finder, self.current_path, self)
-        if dialog.exec_() == QDialog.Accepted:
-            result = dialog.get_result()
-            if result:
-                self.process_accurate_selection_result(result)
+
 
     def open_visual_selection_dialog(self):
         """비주얼 선별도우미 다이얼로그 열기"""
@@ -321,6 +314,16 @@ class MainWindow(QMainWindow):
         # 영상 타임라인 다이얼로그 열기
         dialog = VideoTimelineDialog(self.capacity_finder, self)
         dialog.show()  # 모달이 아닌 일반 윈도우로 표시
+
+    def open_intelligent_cleanup_dialog(self):
+        """지능형 정리도우미 다이얼로그 열기"""
+        if not self.capacity_finder or not self.capacity_finder.dic_files:
+            QMessageBox.warning(self, "데이터 없음", "먼저 경로를 선택하고 파일을 분석해주세요.")
+            return
+        
+        # 지능형 정리 다이얼로그 열기 (모달 창으로)
+        dialog = IntelligentCleanupDialog(self.capacity_finder, self)
+        dialog.exec_()  # 모달 창으로 실행, 결과 처리는 다이얼로그 내부에서
 
     def process_site_comparison_result(self, result):
         """사이트 비교 결과 처리"""
@@ -452,71 +455,9 @@ class MainWindow(QMainWindow):
         if self.on_path_confirmed:
             self.on_path_confirmed(self.current_path)
 
-    def process_accurate_selection_result(self, result):
-        """정확한 선별 결과 처리"""
-        if not result.get('files_to_delete'):
-            QMessageBox.information(self, "결과", "삭제할 파일이 없습니다.")
-            return
-        
-        files_to_delete = result['files_to_delete']
-        files_to_keep = result['files_to_keep']
-        total_savings = result['total_savings']
-        username = result['username']
-        
-        # 확인 메시지
-        msg = f"사용자 '{username}'의 선별되지 않은 파일 {len(files_to_delete)}개를 삭제하시겠습니까?\n"
-        msg += f"유지할 파일: {len(files_to_keep)}개\n"
-        msg += f"절약될 용량: {self.format_file_size(total_savings)}\n\n"
-        msg += "삭제할 파일들 (처음 5개):\n"
-        for file_info in files_to_delete[:5]:
-            msg += f"- {file_info['name']} ({self.format_file_size(file_info['size'])})\n"
-        if len(files_to_delete) > 5:
-            msg += f"... 외 {len(files_to_delete) - 5}개\n"
-        
-        reply = QMessageBox.question(
-            self, "선별 삭제 확인", msg,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            self.execute_accurate_selection_deletions(files_to_delete, total_savings, username)
 
-    def execute_accurate_selection_deletions(self, files_to_delete, total_savings, username):
-        """정확한 선별 결과에 따른 파일 삭제 실행"""
-        if not self.current_path:
-            QMessageBox.warning(self, "오류", "현재 경로가 설정되지 않았습니다.")
-            return
-        
-        deleted_count = 0
-        failed_count = 0
-        
-        for file_info in files_to_delete:
-            file_path = os.path.join(self.current_path, file_info['name'])
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    deleted_count += 1
-                    print(f"삭제됨: {file_info['name']}")
-                else:
-                    failed_count += 1
-                    print(f"파일 없음: {file_info['name']}")
-            except Exception as e:
-                failed_count += 1
-                print(f"삭제 실패: {file_info['name']}, 오류: {e}")
-        
-        # 결과 메시지
-        result_msg = f"사용자 '{username}' 정확한 선별 완료!\n\n"
-        result_msg += f"삭제된 파일: {deleted_count}개\n"
-        if failed_count > 0:
-            result_msg += f"삭제 실패: {failed_count}개\n"
-        result_msg += f"절약된 용량: {self.format_file_size(total_savings)}"
-        
-        QMessageBox.information(self, "선별 완료", result_msg)
-        
-        # 현재 경로 재탐색
-        if self.on_path_confirmed:
-            self.on_path_confirmed(self.current_path)
+
+
 
     def process_deletion_decisions(self, decisions, total_savings):
         """삭제 결정 처리"""
