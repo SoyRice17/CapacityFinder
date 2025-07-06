@@ -10,6 +10,7 @@ from decision_dialog import ModelDecisionDialog, SortSelectionDialog
 from user_site_comparison_dialog import UserSiteComparisonDialog
 from accurate_selection_dialog import AccurateSelectionDialog
 from visual_selection_dialog import VisualSelectionDialog
+from video_timeline_dialog import VideoTimelineDialog
 from rating_dialog import RatingDialog
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
@@ -121,14 +122,13 @@ class MainWindow(QMainWindow):
             }
         """)
         
-        # 모델 정리 버튼 추가
-        self.model_cleanup_button = QPushButton("🗑️ 기존 정리도우미")
-        self.model_cleanup_button.clicked.connect(self.open_model_decision_dialog)
-        self.model_cleanup_button.setMinimumHeight(40)
-        self.model_cleanup_button.setEnabled(False)
-        self.model_cleanup_button.setStyleSheet("""
+        # 분석도구 통합 버튼 (드롭다운 메뉴 포함)
+        self.analysis_tools_button = QPushButton("🛠️ 분석도구 ▼")
+        self.analysis_tools_button.setMinimumHeight(40)
+        self.analysis_tools_button.setEnabled(False)
+        self.analysis_tools_button.setStyleSheet("""
             QPushButton {
-                background-color: #e74c3c;
+                background-color: #34495e;
                 color: white;
                 border: none;
                 border-radius: 8px;
@@ -137,104 +137,50 @@ class MainWindow(QMainWindow):
                 padding: 10px;
             }
             QPushButton:hover:enabled {
-                background-color: #c0392b;
+                background-color: #2c3e50;
             }
             QPushButton:pressed:enabled {
-                background-color: #a93226;
+                background-color: #1b2631;
             }
             QPushButton:disabled {
                 background-color: #95a5a6;
                 color: #7f8c8d;
+            }
+            QPushButton::menu-indicator {
+                image: none; /* 기본 드롭다운 화살표 숨기기 */
             }
         """)
         
-        # 특정 유저 사이트 비교 버튼 추가
-        self.user_site_comparison_button = QPushButton("⚖️ 유저 사이트 비교")
-        self.user_site_comparison_button.clicked.connect(self.open_user_site_comparison_dialog)
-        self.user_site_comparison_button.setMinimumHeight(40)
-        self.user_site_comparison_button.setEnabled(False)
-        self.user_site_comparison_button.setStyleSheet("""
-            QPushButton {
-                background-color: #9b59b6;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 10px;
-            }
-            QPushButton:hover:enabled {
-                background-color: #8e44ad;
-            }
-            QPushButton:pressed:enabled {
-                background-color: #7d3c98;
-            }
-            QPushButton:disabled {
-                background-color: #95a5a6;
-                color: #7f8c8d;
-            }
-        """)
+        # 분석도구 메뉴 생성
+        self.analysis_menu = QMenu(self)
         
-        # 정확한 선별도우미 버튼 추가
-        self.accurate_selection_button = QPushButton("🎯 정확한 선별도우미")
-        self.accurate_selection_button.clicked.connect(self.open_accurate_selection_dialog)
-        self.accurate_selection_button.setMinimumHeight(40)
-        self.accurate_selection_button.setEnabled(False)
-        self.accurate_selection_button.setStyleSheet("""
-            QPushButton {
-                background-color: #f39c12;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 10px;
-            }
-            QPushButton:hover:enabled {
-                background-color: #e67e22;
-            }
-            QPushButton:pressed:enabled {
-                background-color: #d35400;
-            }
-            QPushButton:disabled {
-                background-color: #95a5a6;
-                color: #7f8c8d;
-            }
-        """)
+        # 메뉴 아이템들 추가
+        cleanup_action = QAction("🗑️ 기존 정리도우미", self)
+        cleanup_action.triggered.connect(self.open_model_decision_dialog)
+        self.analysis_menu.addAction(cleanup_action)
         
-        # 비주얼 선별도우미 버튼 추가
-        self.visual_selection_button = QPushButton("🖼️ 비주얼 선별도우미")
-        self.visual_selection_button.clicked.connect(self.open_visual_selection_dialog)
-        self.visual_selection_button.setMinimumHeight(40)
-        self.visual_selection_button.setEnabled(False)
-        self.visual_selection_button.setStyleSheet("""
-            QPushButton {
-                background-color: #8e44ad;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 10px;
-            }
-            QPushButton:hover:enabled {
-                background-color: #7d3c98;
-            }
-            QPushButton:pressed:enabled {
-                background-color: #6c3483;
-            }
-            QPushButton:disabled {
-                background-color: #95a5a6;
-                color: #7f8c8d;
-            }
-        """)
+        comparison_action = QAction("⚖️ 유저 사이트 비교", self)
+        comparison_action.triggered.connect(self.open_user_site_comparison_dialog)
+        self.analysis_menu.addAction(comparison_action)
+        
+        accurate_action = QAction("🎯 정확한 선별도우미", self)
+        accurate_action.triggered.connect(self.open_accurate_selection_dialog)
+        self.analysis_menu.addAction(accurate_action)
+        
+        visual_action = QAction("🖼️ 비주얼 선별도우미", self)
+        visual_action.triggered.connect(self.open_visual_selection_dialog)
+        self.analysis_menu.addAction(visual_action)
+        
+        timeline_action = QAction("🎬 영상 타임라인 뷰어", self)
+        timeline_action.triggered.connect(self.open_video_timeline_dialog)
+        self.analysis_menu.addAction(timeline_action)
+        
+        # 버튼에 메뉴 연결
+        self.analysis_tools_button.setMenu(self.analysis_menu)
         
         path_button_layout.addWidget(self.select_path_button, 3)
         path_button_layout.addWidget(self.quick_rescan_button, 1)
-        path_button_layout.addWidget(self.model_cleanup_button, 1)
-        path_button_layout.addWidget(self.user_site_comparison_button, 1)
-        path_button_layout.addWidget(self.accurate_selection_button, 1)
-        path_button_layout.addWidget(self.visual_selection_button, 1)
+        path_button_layout.addWidget(self.analysis_tools_button, 2)
         
         layout.addLayout(path_button_layout, 1)
 
@@ -267,22 +213,16 @@ class MainWindow(QMainWindow):
     def set_capacity_finder(self, capacity_finder):
         """CapacityFinder 인스턴스 설정"""
         self.capacity_finder = capacity_finder
-        # 데이터가 있을 때만 모델 정리 버튼 활성화
+        # 데이터가 있을 때만 분석도구 버튼 활성화
         if capacity_finder and capacity_finder.dic_files:
-            self.model_cleanup_button.setEnabled(True)
+            self.analysis_tools_button.setEnabled(True)
 
     def update_cleanup_button_state(self):
-        """모델 정리 버튼들 상태 업데이트"""
+        """분석도구 버튼 상태 업데이트"""
         if self.capacity_finder and self.capacity_finder.dic_files:
-            self.model_cleanup_button.setEnabled(True)
-            self.user_site_comparison_button.setEnabled(True)
-            self.accurate_selection_button.setEnabled(True)
-            self.visual_selection_button.setEnabled(True)
+            self.analysis_tools_button.setEnabled(True)
         else:
-            self.model_cleanup_button.setEnabled(False)
-            self.user_site_comparison_button.setEnabled(False)
-            self.accurate_selection_button.setEnabled(False)
-            self.visual_selection_button.setEnabled(False)
+            self.analysis_tools_button.setEnabled(False)
 
     def open_model_decision_dialog(self):
         """모델 결정 다이얼로그 열기"""
@@ -349,6 +289,16 @@ class MainWindow(QMainWindow):
             result = dialog.get_result()
             if result:
                 self.process_visual_selection_result(result)
+    
+    def open_video_timeline_dialog(self):
+        """영상 타임라인 뷰어 다이얼로그 열기"""
+        if not self.capacity_finder or not self.capacity_finder.current_path:
+            QMessageBox.warning(self, "데이터 없음", "먼저 경로를 선택하고 파일을 분석해주세요.")
+            return
+        
+        # 영상 타임라인 다이얼로그 열기
+        dialog = VideoTimelineDialog(self.capacity_finder, self)
+        dialog.show()  # 모달이 아닌 일반 윈도우로 표시
 
     def process_site_comparison_result(self, result):
         """사이트 비교 결과 처리"""
