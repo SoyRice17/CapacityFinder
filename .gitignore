@@ -6,3 +6,4 @@ user_ratings.json
 ffmpeg_config.json
 ffmpeg_bundle/
 logs/
+protected_files.json

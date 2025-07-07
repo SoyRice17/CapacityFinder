@@ -928,3 +928,47 @@ class MainWindow(QMainWindow):
             return f"{size_gb:.2f} GB"
         else:
             return f"{size_mb:.2f} MB"
+    
+    def update_tree_display(self):
+        """트리 디스플레이 업데이트 (파일 삭제 후 메모리와 동기화)"""
+        if not self.capacity_finder or not self.capacity_finder.dic_files:
+            return
+        
+        logger.info("🔄 메인 GUI 트리 디스플레이 업데이트 시작")
+        
+        # 기존 데이터 저장 (헤더 정보 등)
+        old_total_size = self.total_size_formatted
+        old_total_count = self.total_files_count
+        
+        # 트리 초기화
+        self.clear_results()
+        
+        # 업데이트된 데이터로 다시 표시
+        sorted_users = sorted(
+            self.capacity_finder.dic_files.items(), 
+            key=lambda x: x[1]['total_size'], 
+            reverse=True
+        )
+        
+        # 새로운 전체 통계 계산
+        total_files_size = sum(user_data['total_size'] for _, user_data in sorted_users)
+        total_files_count = sum(len(user_data['files']) for _, user_data in sorted_users)
+        formatted_total_size = self.format_file_size(total_files_size)
+        
+        # 헤더 추가
+        self.add_header_with_totals("사용자별 파일 용량 (용량 큰 순)", formatted_total_size, total_files_count)
+        
+        # 사용자 데이터 추가
+        for username, user_data in sorted_users:
+            formatted_size = self.format_file_size(user_data['total_size'])
+            self.add_user_data(username, user_data, formatted_size)
+        
+        logger.info(f"✅ 메인 GUI 업데이트 완료: {len(sorted_users)}명 사용자, {formatted_total_size}")
+    
+    def refresh_file_list(self):
+        """파일 목록 새로고침 (전체 경로 재스캔)"""
+        if self.current_path and self.on_path_confirmed:
+            logger.info(f"🔄 전체 경로 재스캔: {self.current_path}")
+            self.on_path_confirmed(self.current_path)
+        else:
+            logger.warning("⚠️ 경로 정보가 없어서 재스캔할 수 없음")

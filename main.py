@@ -55,7 +55,9 @@ class IntelligentCurationSystem:
         self.ratings_file = ratings_file
         self.ratings_data = self.load_ratings()
         self.keyword_weights = self.load_keyword_weights()
+        self.protected_files = self.load_protected_files()  # 보호 목록 추가
         logger.info("🧠 지능형 큐레이션 시스템 초기화 완료 (다양성 유지 점수 시스템 적용)")
+        logger.info(f"🛡️ 보호된 파일: {len(self.protected_files)}개")
     
     def load_ratings(self):
         """레이팅 데이터 로드"""
@@ -86,6 +88,69 @@ class IntelligentCurationSystem:
         # 기본값 사용
         logger.info("기본 키워드 가중치 사용")
         return self.get_default_keyword_weights()
+    
+    def load_protected_files(self):
+        """보호 목록 파일 로드"""
+        try:
+            if os.path.exists('protected_files.json'):
+                with open('protected_files.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    protected_files = set(data.get('protected_files', []))
+                    logger.info(f"🛡️ 보호 목록 로드: {len(protected_files)}개 파일")
+                    return protected_files
+        except Exception as e:
+            logger.error(f"보호 목록 로드 오류: {e}")
+        
+        logger.info("🛡️ 빈 보호 목록으로 시작")
+        return set()
+    
+    def save_protected_files(self):
+        """보호 목록 파일 저장"""
+        try:
+            data = {
+                'protected_files': list(self.protected_files),
+                'last_updated': datetime.now().isoformat(),
+                'total_count': len(self.protected_files)
+            }
+            
+            with open('protected_files.json', 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"🛡️ 보호 목록 저장 완료: {len(self.protected_files)}개 파일")
+            return True
+        except Exception as e:
+            logger.error(f"보호 목록 저장 오류: {e}")
+            return False
+    
+    def add_to_protected_files(self, filename):
+        """파일을 보호 목록에 추가"""
+        if filename not in self.protected_files:
+            self.protected_files.add(filename)
+            self.save_protected_files()
+            logger.info(f"🛡️ 파일 보호 추가: {filename}")
+            return True
+        return False
+    
+    def remove_from_protected_files(self, filename):
+        """파일을 보호 목록에서 제거"""
+        if filename in self.protected_files:
+            self.protected_files.remove(filename)
+            self.save_protected_files()
+            logger.info(f"🗑️ 파일 보호 해제: {filename}")
+            return True
+        return False
+    
+    def is_file_protected(self, filename):
+        """파일이 보호 목록에 있는지 확인"""
+        return filename in self.protected_files
+    
+    def get_protected_files_list(self):
+        """보호된 파일 목록 반환 (통계 포함)"""
+        return {
+            'protected_files': list(self.protected_files),
+            'count': len(self.protected_files),
+            'last_updated': datetime.now().isoformat()
+        }
     
     def get_default_keyword_weights(self):
         """기본 키워드 가중치 시스템 구축 - 다양성 유지 버전"""
@@ -258,28 +323,294 @@ class IntelligentCurationSystem:
         return priority_list
     
     def get_auto_deletion_suggestions(self, capacity_finder, target_savings_gb=10):
-        """자동 삭제 추천 (목표 절약 용량 기준) - 다양성 유지 기준"""
-        priority_list = self.get_deletion_priority_list(capacity_finder)
+        """자동 삭제 추천 (목표 절약 용량 기준) - 목표 달성 우선 방식"""
         target_savings_mb = target_savings_gb * 1024
+        
+        # 사용자별로 파일 분석 및 그룹화 (점수 기준을 동적으로 조정)
+        user_deletion_candidates = {}
+        score_threshold = 0.25  # 시작 기준점
+        
+        # 1단계: 기본 기준으로 후보 수집
+        logger.info(f"🎯 목표 용량: {target_savings_gb}GB ({target_savings_mb}MB)")
+        
+        for username, user_data in capacity_finder.dic_files.items():
+            files_with_scores = []
+            
+            # 사용자별 파일 점수 계산
+            for file_info in user_data['files']:
+                filename = file_info['name']
+                
+                # 보호된 파일은 제외
+                if self.is_file_protected(filename):
+                    logger.debug(f"🛡️ 보호된 파일 제외: {filename}")
+                    continue
+                
+                score_data = self.calculate_composite_score(username, file_info, user_data['files'])
+                files_with_scores.append({
+                    'name': file_info['name'],
+                    'size': file_info['size'],
+                    'composite_score': score_data['composite_score'],
+                    'file_score': score_data['file_score'],
+                    'rating_score': score_data['rating_score'],
+                    'username': username
+                })
+            
+            # 점수 낮은 순으로 정렬
+            files_with_scores.sort(key=lambda x: x['composite_score'])
+            
+            if files_with_scores:
+                user_deletion_candidates[username] = files_with_scores
+        
+        # 2단계: 목표 달성을 위한 동적 기준 조정
+        suggestions = []
+        criteria_used = []
+        
+        # 여러 기준으로 시도하여 목표 달성
+        thresholds = [0.25, 0.35, 0.45, 0.55, 0.65]  # 점수 기준을 점진적으로 완화
+        
+        for threshold in thresholds:
+            # 현재 기준으로 후보 선택
+            filtered_candidates = {}
+            total_available_mb = 0
+            
+            for username, files in user_deletion_candidates.items():
+                filtered_files = [f for f in files if f['composite_score'] <= threshold]
+                if filtered_files:
+                    filtered_candidates[username] = filtered_files
+                    total_available_mb += sum(f['size'] for f in filtered_files)
+            
+            logger.info(f"📊 점수 {threshold} 이하: {total_available_mb/1024:.2f}GB 이용 가능")
+            
+            # 이용 가능한 용량이 목표의 80% 이상이면 진행
+            if total_available_mb >= target_savings_mb * 0.8:
+                suggestions = self._get_target_focused_deletion_suggestions(
+                    filtered_candidates, target_savings_mb, threshold
+                )
+                criteria_used.append(f"composite_score <= {threshold}")
+                break
+        
+        # 3단계: 그래도 부족하면 최후 수단
+        if not suggestions or sum(f['size'] for f in suggestions) < target_savings_mb * 0.5:
+            logger.warning("⚠️ 기본 기준으로는 목표 달성 어려움 - 강화된 기준 적용")
+            suggestions = self._get_aggressive_deletion_suggestions(
+                user_deletion_candidates, target_savings_mb
+            )
+            criteria_used.append("aggressive mode")
+        
+        total_savings_gb = sum(f['size'] for f in suggestions) / 1024
+        achievement_rate = (total_savings_gb / target_savings_gb) * 100 if target_savings_gb > 0 else 0
+        
+        logger.info(f"✅ 목표 달성률: {achievement_rate:.1f}% ({total_savings_gb:.2f}GB / {target_savings_gb}GB)")
+        
+        return {
+            'suggested_files': suggestions,
+            'total_savings_gb': total_savings_gb,
+            'files_count': len(suggestions),
+            'criteria': ' + '.join(criteria_used),
+            'achievement_rate': achievement_rate,
+            'target_gb': target_savings_gb
+        }
+    
+    def _get_balanced_deletion_suggestions(self, user_deletion_candidates, target_savings_mb):
+        """균등 분배 방식으로 삭제 추천 파일 선택"""
+        if not user_deletion_candidates:
+            return []
+        
+        suggestions = []
+        current_savings = 0
+        total_users = len(user_deletion_candidates)
+        
+        # 1단계: 각 사용자별로 최소 1개씩 선택 (골고루 분배)
+        user_indices = {username: 0 for username in user_deletion_candidates.keys()}
+        
+        # 라운드 로빈 방식으로 각 사용자별로 돌아가며 파일 선택
+        round_count = 0
+        max_rounds = 50  # 무한 루프 방지
+        
+        while current_savings < target_savings_mb and round_count < max_rounds:
+            round_count += 1
+            selected_in_round = 0
+            
+            for username, files in user_deletion_candidates.items():
+                if current_savings >= target_savings_mb:
+                    break
+                
+                current_index = user_indices[username]
+                
+                # 해당 사용자의 다음 파일 선택
+                if current_index < len(files):
+                    file_data = files[current_index]
+                    
+                    # 한 사용자당 최대 제한 (전체 파일의 80% 이하)
+                    user_total_files = len(user_deletion_candidates[username])
+                    max_files_per_user = max(1, int(user_total_files * 0.8))
+                    
+                    # 현재 사용자가 이미 선택된 파일 수 계산
+                    current_user_selected = sum(1 for f in suggestions if f['username'] == username)
+                    
+                    if current_user_selected < max_files_per_user:
+                        suggestions.append(file_data)
+                        current_savings += file_data['size']
+                        selected_in_round += 1
+                        logger.debug(f"균등 분배 선택: {username} - {file_data['name']} (점수: {file_data['composite_score']:.3f})")
+                    
+                    user_indices[username] += 1
+            
+            # 이번 라운드에서 선택된 파일이 없으면 종료
+            if selected_in_round == 0:
+                break
+        
+        # 사용자별 통계 로그
+        user_stats = {}
+        for file_data in suggestions:
+            username = file_data['username']
+            if username not in user_stats:
+                user_stats[username] = {'count': 0, 'size': 0}
+            user_stats[username]['count'] += 1
+            user_stats[username]['size'] += file_data['size']
+        
+        logger.info(f"🎯 균등 분배 완료: {len(suggestions)}개 파일, {current_savings/1024:.2f}GB")
+        logger.info(f"📊 사용자별 분배: {dict([(k, v['count']) for k, v in user_stats.items()])}")
+        
+        return suggestions
+    
+    def _get_target_focused_deletion_suggestions(self, user_deletion_candidates, target_savings_mb, threshold):
+        """목표 달성에 집중한 파일 선택 방식"""
+        if not user_deletion_candidates:
+            return []
         
         suggestions = []
         current_savings = 0
         
-        for file_data in priority_list:
+        # 모든 후보 파일을 점수순으로 통합 정렬
+        all_candidates = []
+        for username, files in user_deletion_candidates.items():
+            all_candidates.extend(files)
+        
+        # 점수 낮은 순으로 정렬 (삭제 우선순위)
+        all_candidates.sort(key=lambda x: x['composite_score'])
+        
+        logger.info(f"🎯 목표 달성 모드: {len(all_candidates)}개 후보에서 선택")
+        
+        # 사용자별 삭제 비율 제한 (조금 더 관대하게)
+        user_deletion_limits = {}
+        user_deleted_counts = {}
+        
+        for username, files in user_deletion_candidates.items():
+            total_files = len(files)
+            # 최대 90%까지 삭제 허용 (기존 80%에서 완화)
+            user_deletion_limits[username] = max(1, int(total_files * 0.9))
+            user_deleted_counts[username] = 0
+        
+        # 목표 달성까지 파일 선택
+        for file_data in all_candidates:
             if current_savings >= target_savings_mb:
                 break
             
-            # 삭제 기준: 복합 점수 0.25 이하 (적당한 기준)
-            if file_data['composite_score'] <= 0.25:
+            username = file_data['username']
+            
+            # 사용자별 제한 확인
+            if user_deleted_counts[username] >= user_deletion_limits[username]:
+                continue
+            
+            suggestions.append(file_data)
+            current_savings += file_data['size']
+            user_deleted_counts[username] += 1
+            
+            # 진행 상황 로그 (매 50개마다)
+            if len(suggestions) % 50 == 0:
+                logger.debug(f"⚡ 진행: {current_savings/1024:.2f}GB ({len(suggestions)}개 파일)")
+        
+        # 사용자별 통계
+        user_stats = {}
+        for file_data in suggestions:
+            username = file_data['username']
+            if username not in user_stats:
+                user_stats[username] = {'count': 0, 'size': 0}
+            user_stats[username]['count'] += 1
+            user_stats[username]['size'] += file_data['size']
+        
+        logger.info(f"🎯 목표 달성 완료: {len(suggestions)}개 파일, {current_savings/1024:.2f}GB")
+        logger.info(f"📊 사용자별 분배: {dict([(k, v['count']) for k, v in user_stats.items()])}")
+        
+        return suggestions
+    
+    def _get_aggressive_deletion_suggestions(self, user_deletion_candidates, target_savings_mb):
+        """강화된 기준으로 목표 달성 시도"""
+        if not user_deletion_candidates:
+            return []
+        
+        suggestions = []
+        current_savings = 0
+        
+        # 모든 파일을 점수순으로 통합 정렬 (점수 제한 없이)
+        all_candidates = []
+        for username, files in user_deletion_candidates.items():
+            all_candidates.extend(files)
+        
+        # 점수 낮은 순으로 정렬
+        all_candidates.sort(key=lambda x: x['composite_score'])
+        
+        logger.warning(f"⚠️ 강화 모드: {len(all_candidates)}개 전체 파일에서 선택")
+        
+        # 사용자별 최대 95%까지 삭제 허용 (매우 관대하게)
+        user_deletion_limits = {}
+        user_deleted_counts = {}
+        
+        for username, files in user_deletion_candidates.items():
+            total_files = len(files)
+            # 최대 95%까지 삭제 허용
+            user_deletion_limits[username] = max(1, int(total_files * 0.95))
+            user_deleted_counts[username] = 0
+        
+        # 점수 0.75 이하까지 확장하여 목표 달성 시도
+        max_score_limit = 0.75
+        
+        for file_data in all_candidates:
+            if current_savings >= target_savings_mb:
+                break
+            
+            # 점수 제한 확인
+            if file_data['composite_score'] > max_score_limit:
+                continue
+            
+            username = file_data['username']
+            
+            # 사용자별 제한 확인
+            if user_deleted_counts[username] >= user_deletion_limits[username]:
+                continue
+            
+            suggestions.append(file_data)
+            current_savings += file_data['size']
+            user_deleted_counts[username] += 1
+        
+        # 여전히 부족하면 점수 제한 완화
+        if current_savings < target_savings_mb * 0.8:
+            logger.warning("⚠️ 점수 제한 0.85까지 완화")
+            max_score_limit = 0.85
+            
+            for file_data in all_candidates:
+                if current_savings >= target_savings_mb:
+                    break
+                
+                if file_data['composite_score'] > max_score_limit:
+                    continue
+                
+                # 이미 선택된 파일은 건너뛰기
+                if file_data in suggestions:
+                    continue
+                
+                username = file_data['username']
+                
+                if user_deleted_counts[username] >= user_deletion_limits[username]:
+                    continue
+                
                 suggestions.append(file_data)
                 current_savings += file_data['size']
+                user_deleted_counts[username] += 1
         
-        return {
-            'suggested_files': suggestions,
-            'total_savings_gb': current_savings / 1024,
-            'files_count': len(suggestions),
-            'criteria': 'composite_score <= 0.25'
-        }
+        logger.warning(f"⚠️ 강화 모드 완료: {len(suggestions)}개 파일, {current_savings/1024:.2f}GB")
+        return suggestions
     
     def get_user_cleanup_analysis(self, username):
         """특정 사용자의 정리 분석"""
@@ -1418,9 +1749,13 @@ class CapacityFinder:
             except Exception as e:
                 logger.error(f"파일 삭제 오류: {file_path}, 에러: {e}")
         
+        # 🔥 중요: 삭제된 파일들을 메모리에서도 제거
+        self._remove_deleted_files_from_memory(deleted_files)
+        
         # 삭제 결과 통계
         deleted_size_gb = deleted_size / 1024
         logger.info(f"🎯 지능형 정리 완료: {len(deleted_files)}개 파일, {deleted_size_gb:.2f}GB 절약")
+        logger.info(f"🧠 메모리 데이터도 동기화 완료")
         
         return {
             'deleted_files': deleted_files,
@@ -1428,6 +1763,38 @@ class CapacityFinder:
             'deleted_size_gb': deleted_size_gb,
             'success': True
         }
+    
+    def _remove_deleted_files_from_memory(self, deleted_files):
+        """삭제된 파일들을 메모리 데이터에서 제거"""
+        deleted_filenames = {file_data['name'] for file_data in deleted_files}
+        
+        for username, user_data in self.dic_files.items():
+            # 삭제되지 않은 파일들만 남기기
+            remaining_files = []
+            removed_size = 0
+            
+            for file_info in user_data['files']:
+                if file_info['name'] in deleted_filenames:
+                    removed_size += file_info['size']
+                    logger.debug(f"메모리에서 제거: {username} - {file_info['name']}")
+                else:
+                    remaining_files.append(file_info)
+            
+            # 사용자 데이터 업데이트
+            user_data['files'] = remaining_files
+            user_data['total_size'] -= removed_size
+            
+            # 파일이 모두 삭제된 사용자는 dic_files에서 제거
+            if not remaining_files:
+                logger.info(f"사용자 '{username}' 모든 파일 삭제됨 - 사용자 데이터 제거")
+        
+        # 빈 사용자 데이터 제거
+        empty_users = [username for username, user_data in self.dic_files.items() if not user_data['files']]
+        for username in empty_users:
+            del self.dic_files[username]
+            logger.info(f"빈 사용자 데이터 제거: {username}")
+        
+        logger.info(f"🔄 메모리 동기화 완료: {len(deleted_files)}개 파일 제거")
 
 def main():
     """메인 함수에서 GUI 애플리케이션을 실행합니다."""
